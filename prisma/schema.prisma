@@ -1,0 +1,310 @@
+generator client {
+  provider        = "prisma-client-js"
+  binaryTargets   = ["native", "rhel-openssl-3.0.x"]
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  directUrl  = env("DIRECT_URL")
+  extensions = [vector]
+}
+
+// ─── Enums ───────────────────────────────────────────────
+
+enum UserRole {
+  USER
+  MODERATOR
+  ADMIN
+}
+
+enum TrustTier {
+  NEW
+  VERIFIED
+  TRUSTED
+  POWER
+}
+
+enum IntentionTag {
+  SELL
+  WANTED
+  TRADE
+  DONATE
+  FIX
+  RECYCLE
+}
+
+enum ListingStatus {
+  ACTIVE
+  PAUSED
+  COMPLETED
+  EXPIRED
+  FLAGGED
+}
+
+enum Condition {
+  NEW
+  LIKE_NEW
+  GOOD
+  FAIR
+  POOR
+}
+
+enum MatchStatus {
+  PENDING
+  VIEWED
+  DISMISSED
+  COMPLETED
+}
+
+enum MessageType {
+  TEXT
+  IMAGE
+  OFFER
+  SYSTEM
+}
+
+enum TransactionStatus {
+  INITIATED
+  FUNDED
+  SHIPPED
+  RECEIVED
+  COMPLETE
+  DISPUTED
+  REFUNDED
+}
+
+enum NotificationType {
+  PAIR_MATCH
+  MESSAGE_RECEIVED
+  TRANSACTION_UPDATE
+  REVIEW_RECEIVED
+  LISTING_EXPIRING
+  SYSTEM
+}
+
+enum ReportTarget {
+  LISTING
+  USER
+}
+
+enum ReportStatus {
+  OPEN
+  REVIEWED
+  RESOLVED
+}
+
+// ─── Models ──────────────────────────────────────────────
+
+model User {
+  id            String    @id @default(uuid())
+  email         String    @unique
+  passwordHash  String?
+  name          String
+  avatarUrl     String?
+  bio           String?
+  city          String?
+  role          UserRole  @default(USER)
+  trustTier     TrustTier @default(NEW)
+  points        Int       @default(0)
+  emailVerified Boolean   @default(false)
+  googleId      String?   @unique
+  bannedAt      DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  listings              Listing[]
+  conversationsAsBuyer  Conversation[]    @relation("BuyerConversations")
+  conversationsAsSeller Conversation[]    @relation("SellerConversations")
+  transactionsAsBuyer   Transaction[]     @relation("BuyerTransactions")
+  transactionsAsSeller  Transaction[]     @relation("SellerTransactions")
+  reviewsGiven          Review[]          @relation("ReviewsGiven")
+  reviewsReceived       Review[]          @relation("ReviewsReceived")
+  notifications         Notification[]
+  achievements          UserAchievement[]
+  reports               Report[]
+  savedListings         SavedListing[]
+}
+
+model Listing {
+  id             String        @id @default(uuid())
+  userId         String
+  user           User          @relation(fields: [userId], references: [id])
+  title          String
+  description    String
+  slug           String        @unique
+  category       String
+  condition      Condition
+  intentionTag   IntentionTag
+  pairingKeyword String?
+  compatibilityAttributes Json?
+  embedding     Unsupported("vector(1536)")?
+  embeddingHash String?
+  embeddingId     String?
+  embeddingTextHash String?
+  lastMatchedAt   DateTime?
+  price          Decimal?
+  status         ListingStatus @default(ACTIVE)
+  images         String[]
+  city           String?
+  viewCount      Int           @default(0)
+  expiresAt      DateTime?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  matchesAsA    Match[]        @relation("MatchA")
+  matchesAsB    Match[]        @relation("MatchB")
+  conversations Conversation[]
+  transactions  Transaction[]
+  savedBy       SavedListing[]
+}
+
+model SavedListing {
+  id        String   @id @default(uuid())
+  userId    String
+  listingId String
+  user      User     @relation(fields: [userId], references: [id])
+  listing   Listing  @relation(fields: [listingId], references: [id])
+  createdAt DateTime @default(now())
+
+  @@unique([userId, listingId])
+}
+
+model Match {
+  id         String      @id @default(uuid())
+  listingAId String
+  listingBId String
+  canonicalKey String    @unique
+  listingA   Listing     @relation("MatchA", fields: [listingAId], references: [id])
+  listingB   Listing     @relation("MatchB", fields: [listingBId], references: [id])
+  score      Float
+  attributeScore Float   @default(0)
+  semanticScore  Float   @default(0)
+  scoreBreakdown Json?
+  status     MatchStatus @default(PENDING)
+  notifiedAt DateTime?
+  createdAt  DateTime    @default(now())
+
+  @@index([listingAId])
+  @@index([listingBId])
+  @@index([status, createdAt])
+}
+
+model Conversation {
+  id        String    @id @default(uuid())
+  listingId String
+  buyerId   String
+  sellerId  String
+  listing   Listing   @relation(fields: [listingId], references: [id])
+  buyer     User      @relation("BuyerConversations", fields: [buyerId], references: [id])
+  seller    User      @relation("SellerConversations", fields: [sellerId], references: [id])
+  messages  Message[]
+  createdAt DateTime  @default(now())
+}
+
+model Message {
+  id             String       @id @default(uuid())
+  conversationId String
+  senderId       String
+  conversation   Conversation @relation(fields: [conversationId], references: [id])
+  type           MessageType  @default(TEXT)
+  content        String
+  readAt         DateTime?
+  createdAt      DateTime     @default(now())
+}
+
+model Transaction {
+  id                  String            @id @default(uuid())
+  listingId           String
+  buyerId             String
+  sellerId            String
+  listing             Listing           @relation(fields: [listingId], references: [id])
+  buyer               User              @relation("BuyerTransactions", fields: [buyerId], references: [id])
+  seller              User              @relation("SellerTransactions", fields: [sellerId], references: [id])
+  amount              Decimal
+  platformFee         Decimal
+  escrowTransactionId String?
+  escrowCheckoutUrl   String?
+  escrowProviderStatus String?
+  status              TransactionStatus @default(INITIATED)
+  trackingInfo        String?
+  fundedAt            DateTime?
+  shippedAt           DateTime?
+  receivedAt          DateTime?
+  completedAt         DateTime?
+  disputedAt          DateTime?
+  refundedAt          DateTime?
+  review              Review?
+  createdAt           DateTime          @default(now())
+  updatedAt           DateTime          @updatedAt
+
+  escrowEvents        EscrowEvent[]
+
+  @@index([buyerId, createdAt])
+  @@index([sellerId, createdAt])
+  @@index([status, createdAt])
+  @@index([escrowTransactionId])
+}
+
+model EscrowEvent {
+  id            String   @id @default(uuid())
+  transactionId String?
+  provider      String
+  eventType     String
+  providerEventId String?
+  payload       Json
+  receivedAt    DateTime @default(now())
+
+  transaction Transaction? @relation(fields: [transactionId], references: [id])
+
+  @@unique([provider, providerEventId])
+  @@index([transactionId])
+}
+
+model Review {
+  id            String      @id @default(uuid())
+  transactionId String      @unique
+  reviewerId    String
+  revieweeId    String
+  transaction   Transaction @relation(fields: [transactionId], references: [id])
+  reviewer      User        @relation("ReviewsGiven", fields: [reviewerId], references: [id])
+  reviewee      User        @relation("ReviewsReceived", fields: [revieweeId], references: [id])
+  rating        Int
+  comment       String?
+  createdAt     DateTime    @default(now())
+}
+
+model Notification {
+  id        String           @id @default(uuid())
+  userId    String
+  user      User             @relation(fields: [userId], references: [id])
+  type      NotificationType
+  title     String
+  body      String
+  link      String?
+  isRead    Boolean          @default(false)
+  createdAt DateTime         @default(now())
+}
+
+model UserAchievement {
+  id             String   @id @default(uuid())
+  userId         String
+  achievementKey String
+  user           User     @relation(fields: [userId], references: [id])
+  awardedAt      DateTime @default(now())
+
+  @@unique([userId, achievementKey])
+}
+
+model Report {
+  id         String       @id @default(uuid())
+  reporterId String
+  reporter   User         @relation(fields: [reporterId], references: [id])
+  targetType ReportTarget
+  targetId   String
+  reason     String
+  status     ReportStatus @default(OPEN)
+  resolution String?
+  createdAt  DateTime     @default(now())
+}
