@@ -112,7 +112,19 @@ To re-enable escrow later, set `ESCROW_ENABLED=true`, configure Escrow.com crede
 
 ## Required Production Parameters
 
-Store production values in SSM Parameter Store under `/remnant/prod/`:
+The production Lambda must include the full runtime environment. Copy
+`lambda-env.production.example.json` to `lambda-env.production.json`, fill the
+real secret values, then run:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\apply-lambda-env.ps1
+```
+
+The script validates required keys, blocks placeholder values, writes UTF-8 JSON
+without BOM, updates `remnant-api`, and waits for the Lambda update to finish.
+
+Store long-lived production values in SSM Parameter Store under `/remnant/prod/`
+as a follow-up hardening step:
 
 ```text
 DATABASE_URL
@@ -137,4 +149,35 @@ MATCH_MAX_CANDIDATES
 MATCH_PRICE_TOLERANCE_PERCENT
 MATCH_REQUIRE_CITY
 PLATFORM_FEE_PERCENTAGE
+```
+
+## Production S3 Buckets
+
+The launch stack creates several buckets with different jobs:
+
+```text
+remnant-frontend-production-remnantwebassetsbucket-*  Next/OpenNext frontend assets
+remnant-f-production-remnantwebcdnredirectbucketbucket-*  redirect/CDN support bucket
+sst-asset-*  SST deployment assets
+sst-state-*  SST state
+remnant-uploads-prod  user listing uploads
+```
+
+Only `remnant-uploads-prod` should be used by the backend upload service:
+
+```env
+AWS_REGION=us-east-1
+AWS_S3_BUCKET=remnant-uploads-prod
+AWS_S3_PUBLIC_BASE_URL=https://remnant-uploads-prod.s3.us-east-1.amazonaws.com
+```
+
+The Lambda execution role `remnant-lambda-role` needs write access to the upload
+prefix:
+
+```json
+{
+  "Effect": "Allow",
+  "Action": ["s3:PutObject", "s3:GetObject", "s3:DeleteObject"],
+  "Resource": "arn:aws:s3:::remnant-uploads-prod/listings/*"
+}
 ```
