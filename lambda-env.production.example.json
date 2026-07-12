@@ -7,7 +7,7 @@
     "FRONTEND_URL": "https://remnantmarket.co",
     "ALLOWED_ORIGINS": "https://remnantmarket.co,https://www.remnantmarket.co",
     "COGNITO_USER_POOL_ID": "us-east-1_beXjHeowG",
-    "COGNITO_CLIENT_ID": "3m5hoqhh82e15sp5rqo6sljpgr",
+    "COGNITO_CLIENT_ID": "REPLACE_WITH_PUBLIC_COGNITO_APP_CLIENT_ID",
     "COGNITO_HOSTED_UI_DOMAIN": "https://us-east-1bexjheowg.auth.us-east-1.amazoncognito.com",
     "GOOGLE_CLIENT_ID": "REPLACE_WITH_GOOGLE_CLIENT_ID",
     "GOOGLE_CLIENT_SECRET": "REPLACE_WITH_GOOGLE_CLIENT_SECRET",

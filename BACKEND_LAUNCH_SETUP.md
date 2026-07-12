@@ -151,6 +151,12 @@ MATCH_REQUIRE_CITY
 PLATFORM_FEE_PERCENTAGE
 ```
 
+`COGNITO_CLIENT_ID` must be the public web app client. Do not use a Cognito app
+client with a client secret for the browser flow. The client must allow the
+authorization code grant, PKCE, scopes `openid email profile`, callback
+`https://remnantmarket.co/auth/callback`, and logout URL
+`https://remnantmarket.co`.
+
 ## Production S3 Buckets
 
 The launch stack creates several buckets with different jobs:

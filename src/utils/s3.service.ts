@@ -1,4 +1,4 @@
-import { Injectable, InternalServerErrorException, BadRequestException } from '@nestjs/common';
+import { Injectable, InternalServerErrorException, BadRequestException, ServiceUnavailableException } from '@nestjs/common';
 import { S3Client, PutObjectCommand, DeleteObjectCommand, HeadObjectCommand } from '@aws-sdk/client-s3';
 import { ConfigService } from '@nestjs/config';
 import { v4 as uuidv4 } from 'uuid';
@@ -62,7 +62,7 @@ export class S3Service {
     if (!file) throw new BadRequestException('No file provided for upload.');
     if (!this.bucketName) {
       console.error('[S3Service] AWS_S3_BUCKET is not configured');
-      throw new InternalServerErrorException('Uploads are not configured yet. Please try again shortly.');
+      throw new ServiceUnavailableException('Image uploads are not configured yet. Please try again shortly.');
     }
 
     // ── 3MB size limit ──
@@ -103,6 +103,10 @@ export class S3Service {
         : `https://${this.bucketName}.s3.${this.region}.amazonaws.com/${fileKey}`;
     } catch (error: unknown) {
       console.error('[S3Service] File upload failed', error);
+      const name = (error as { name?: string }).name;
+      if (name === 'AccessDenied' || name === 'NoSuchBucket' || name === 'PermanentRedirect') {
+        throw new ServiceUnavailableException('Image uploads are not ready yet. Please check the upload bucket settings.');
+      }
       throw new InternalServerErrorException('File upload failed. Please try again.');
     }
   }

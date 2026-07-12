@@ -202,6 +202,13 @@ export class AuthService {
 
   private toAuthException(error: unknown, fallback: string) {
     const maybeError = error as { name?: string; message?: string };
+    const rawMessage = maybeError.message ?? '';
+
+    if (/SECRET_HASH|client secret|invalid client/i.test(rawMessage)) {
+      return new InternalServerErrorException(
+        'Authentication is pointing at a Cognito app client with a secret. Use the public web app client id in Lambda.',
+      );
+    }
 
     if (maybeError.name === 'UsernameExistsException') {
       return new BadRequestException('An account already exists for this email.');
@@ -216,7 +223,7 @@ export class AuthService {
     }
 
     if (maybeError.name === 'InvalidPasswordException' || maybeError.name === 'InvalidParameterException') {
-      return new BadRequestException(maybeError.message || fallback);
+      return new BadRequestException(rawMessage || fallback);
     }
 
     return new BadRequestException(fallback);
