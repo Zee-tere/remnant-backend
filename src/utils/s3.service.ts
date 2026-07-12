@@ -38,8 +38,8 @@ export class S3Service {
   private publicBaseUrl?: string;
 
   constructor(private readonly configService: ConfigService) {
-    this.bucketName = this.configService.get<string>('AWS_S3_BUCKET', 'remnant-platform')!;
-    this.region = this.configService.get<string>('AWS_REGION', 'eu-north-1')!;
+    this.bucketName = this.configService.get<string>('AWS_S3_BUCKET')?.trim() ?? '';
+    this.region = this.configService.get<string>('AWS_REGION', 'us-east-1')!;
     this.publicBaseUrl = this.configService.get<string>('AWS_S3_PUBLIC_BASE_URL')?.replace(/\/$/, '');
 
     const accessKeyId = this.configService.get<string>('AWS_ACCESS_KEY_ID');
@@ -60,6 +60,10 @@ export class S3Service {
 
   async uploadFile(file: Express.Multer.File): Promise<string> {
     if (!file) throw new BadRequestException('No file provided for upload.');
+    if (!this.bucketName) {
+      console.error('[S3Service] AWS_S3_BUCKET is not configured');
+      throw new InternalServerErrorException('Uploads are not configured yet. Please try again shortly.');
+    }
 
     // ── 3MB size limit ──
     if (file.size > MAX_FILE_SIZE) {
