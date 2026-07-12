@@ -1,7 +1,10 @@
-import { Controller, Get, Post, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Post, Req, UseGuards } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
 import { Request } from 'express';
 import { AuthService } from './auth.service';
+import { ConfirmSignupDto } from './dto/confirm-signup.dto';
+import { LoginDto } from './dto/login.dto';
+import { RegisterDto } from './dto/register.dto';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 
 @Controller('auth')
@@ -15,14 +18,20 @@ export class AuthController {
 
   @Post('register')
   @Throttle({ auth: { limit: 5, ttl: 60000 } })
-  register() {
-    return this.authService.cognitoOnly();
+  register(@Body() dto: RegisterDto) {
+    return this.authService.register(dto);
   }
 
   @Post('login')
   @Throttle({ auth: { limit: 10, ttl: 60000 } })
-  login() {
-    return this.authService.cognitoOnly();
+  login(@Body() dto: LoginDto) {
+    return this.authService.login(dto);
+  }
+
+  @Post('confirm-signup')
+  @Throttle({ auth: { limit: 10, ttl: 60000 } })
+  confirmSignup(@Body() dto: ConfirmSignupDto) {
+    return this.authService.confirmSignup(dto);
   }
 
   @Post('refresh')
