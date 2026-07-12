@@ -14,10 +14,12 @@ import {
   ConfirmSignUpCommand,
   SignUpCommand,
 } from '@aws-sdk/client-cognito-identity-provider';
+import { CognitoJwtVerifier } from 'aws-jwt-verify';
 import * as jwt from 'jsonwebtoken';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuthenticatedUser } from './auth.types';
 import { ConfirmSignupDto } from './dto/confirm-signup.dto';
+import { HostedSessionDto } from './dto/hosted-session.dto';
 import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
 
@@ -39,6 +41,7 @@ const SAFE_USER_SELECT = {
 @Injectable()
 export class AuthService {
   private readonly cognitoClient: CognitoIdentityProviderClient;
+  private idTokenVerifier?: ReturnType<typeof CognitoJwtVerifier.create>;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -148,6 +151,80 @@ export class AuthService {
     }
   }
 
+  async hostedSession(dto: HostedSessionDto) {
+    const idPayload = (await this.getIdTokenVerifier().verify(dto.idToken)) as {
+      sub?: string;
+      email?: string;
+      name?: string;
+      given_name?: string;
+      family_name?: string;
+      picture?: string;
+      email_verified?: boolean | string;
+      identities?: string;
+      'cognito:username'?: string;
+    };
+
+    const userInfo = await this.cognitoClient.send(new GetUserCommand({ AccessToken: dto.accessToken }));
+    const attributes = new Map((userInfo.UserAttributes ?? []).map((item) => [item.Name, item.Value]));
+    const accessSub = attributes.get('sub');
+    const cognitoSub = idPayload.sub ?? accessSub;
+    const emailValue = idPayload.email ?? attributes.get('email');
+    if (!emailValue) {
+      throw new UnauthorizedException(
+        'Your sign-in provider did not share an email address. Please check the Cognito email/profile scopes and Google attribute mapping.',
+      );
+    }
+
+    const email = this.normalizeEmail(emailValue);
+    const name =
+      idPayload.name?.trim() ||
+      [idPayload.given_name, idPayload.family_name].filter(Boolean).join(' ').trim() ||
+      attributes.get('name')?.trim() ||
+      email.split('@')[0];
+    const username = idPayload['cognito:username'] ?? userInfo.Username;
+
+    if (!cognitoSub || (accessSub && accessSub !== cognitoSub)) {
+      throw new UnauthorizedException('Sign-in could not be verified. Please try again.');
+    }
+
+    const emailVerified = idPayload.email_verified === true || idPayload.email_verified === 'true' || attributes.get('email_verified') === 'true';
+    const googleId = username?.startsWith('google_') ? cognitoSub : undefined;
+
+    const existingBySub = await this.prisma.user.findUnique({ where: { id: cognitoSub } });
+    const existingByGoogleId =
+      existingBySub ?? (googleId ? await this.prisma.user.findUnique({ where: { googleId } }) : null);
+    const existing = existingByGoogleId ?? (await this.prisma.user.findUnique({ where: { email } }));
+
+    const user = existing
+      ? await this.prisma.user.update({
+          where: { id: existing.id },
+          data: {
+            email,
+            name,
+            emailVerified,
+            avatarUrl: existing.avatarUrl ?? idPayload.picture,
+            googleId: googleId ?? existing.googleId,
+          },
+          select: SAFE_USER_SELECT,
+        })
+      : await this.prisma.user.create({
+          data: {
+            id: cognitoSub,
+            email,
+            name,
+            emailVerified,
+            avatarUrl: idPayload.picture,
+            googleId,
+          },
+          select: SAFE_USER_SELECT,
+        });
+
+    return {
+      user,
+      accessToken: dto.accessToken,
+    };
+  }
+
   async getProfile(userId: string) {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
@@ -194,6 +271,23 @@ export class AuthService {
     return clientId;
   }
 
+  private getIdTokenVerifier() {
+    if (this.idTokenVerifier) return this.idTokenVerifier;
+
+    const userPoolId = this.configService.get<string>('COGNITO_USER_POOL_ID');
+    const clientId = this.getCognitoClientId();
+
+    if (!userPoolId) throw new InternalServerErrorException('Sign-in is not configured.');
+
+    this.idTokenVerifier = CognitoJwtVerifier.create({
+      userPoolId,
+      tokenUse: 'id',
+      clientId,
+    });
+
+    return this.idTokenVerifier;
+  }
+
   private normalizeEmail(email?: string) {
     const normalized = email?.trim().toLowerCase();
     if (!normalized) throw new BadRequestException('A valid email address is required.');
@@ -207,6 +301,18 @@ export class AuthService {
     if (/SECRET_HASH|client secret|invalid client/i.test(rawMessage)) {
       return new InternalServerErrorException(
         'Authentication is pointing at a Cognito app client with a secret. Use the public web app client id in Lambda.',
+      );
+    }
+
+    if (/USER_PASSWORD_AUTH flow not enabled/i.test(rawMessage)) {
+      return new InternalServerErrorException(
+        'Password login is not enabled for the current Cognito app client. Enable ALLOW_USER_PASSWORD_AUTH or update Lambda to the correct public client id.',
+      );
+    }
+
+    if (/Invalid FROM email address ARN/i.test(rawMessage)) {
+      return new InternalServerErrorException(
+        'Cognito email delivery is not configured correctly. Verify the SES sender identity or switch the user pool to Cognito default email.',
       );
     }
 

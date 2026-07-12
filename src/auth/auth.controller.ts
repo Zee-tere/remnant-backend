@@ -3,6 +3,7 @@ import { Throttle } from '@nestjs/throttler';
 import { Request } from 'express';
 import { AuthService } from './auth.service';
 import { ConfirmSignupDto } from './dto/confirm-signup.dto';
+import { HostedSessionDto } from './dto/hosted-session.dto';
 import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
@@ -32,6 +33,12 @@ export class AuthController {
   @Throttle({ auth: { limit: 10, ttl: 60000 } })
   confirmSignup(@Body() dto: ConfirmSignupDto) {
     return this.authService.confirmSignup(dto);
+  }
+
+  @Post('hosted-session')
+  @Throttle({ auth: { limit: 10, ttl: 60000 } })
+  hostedSession(@Body() dto: HostedSessionDto) {
+    return this.authService.hostedSession(dto);
   }
 
   @Post('refresh')

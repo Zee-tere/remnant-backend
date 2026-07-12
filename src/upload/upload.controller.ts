@@ -1,5 +1,6 @@
 import {
   Controller,
+  Get,
   Post,
   UploadedFile,
   UploadedFiles,
@@ -19,6 +20,11 @@ const MAX_GUEST_FILES = 4;
 @Controller('upload')
 export class UploadController {
   constructor(private readonly s3Service: S3Service) {}
+
+  @Get('status')
+  async uploadStatus() {
+    return this.s3Service.getUploadStatus();
+  }
 
   @Post()
   @UseGuards(JwtAuthGuard)

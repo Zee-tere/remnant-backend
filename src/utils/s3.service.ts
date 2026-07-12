@@ -1,5 +1,5 @@
 import { Injectable, InternalServerErrorException, BadRequestException, ServiceUnavailableException } from '@nestjs/common';
-import { S3Client, PutObjectCommand, DeleteObjectCommand, HeadObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, PutObjectCommand, DeleteObjectCommand, HeadObjectCommand, HeadBucketCommand } from '@aws-sdk/client-s3';
 import { ConfigService } from '@nestjs/config';
 import { v4 as uuidv4 } from 'uuid';
 
@@ -108,6 +108,46 @@ export class S3Service {
         throw new ServiceUnavailableException('Image uploads are not ready yet. Please check the upload bucket settings.');
       }
       throw new InternalServerErrorException('File upload failed. Please try again.');
+    }
+  }
+
+  async getUploadStatus() {
+    if (!this.bucketName) {
+      return {
+        configured: false,
+        bucket: null,
+        region: this.region,
+        publicBaseUrlConfigured: Boolean(this.publicBaseUrl),
+        bucketReachable: false,
+        message: 'AWS_S3_BUCKET is not set on Lambda.',
+      };
+    }
+
+    try {
+      await this.s3Client.send(new HeadBucketCommand({ Bucket: this.bucketName }));
+      return {
+        configured: true,
+        bucket: this.bucketName,
+        region: this.region,
+        publicBaseUrlConfigured: Boolean(this.publicBaseUrl),
+        bucketReachable: true,
+        message: 'Upload bucket is configured and reachable from Lambda.',
+      };
+    } catch (error: unknown) {
+      const maybeError = error as { name?: string; message?: string; '$metadata'?: { httpStatusCode?: number } };
+      return {
+        configured: true,
+        bucket: this.bucketName,
+        region: this.region,
+        publicBaseUrlConfigured: Boolean(this.publicBaseUrl),
+        bucketReachable: false,
+        errorName: maybeError.name ?? 'UnknownError',
+        statusCode: maybeError.$metadata?.httpStatusCode ?? null,
+        message:
+          maybeError.name === 'AccessDenied'
+            ? 'Lambda can see the bucket name but remnant-lambda-role does not have enough S3 permission.'
+            : 'Lambda cannot reach the upload bucket. Check AWS_S3_BUCKET, AWS_REGION, bucket existence, and role permissions.',
+      };
     }
   }
 

@@ -67,13 +67,27 @@ export class CognitoAuthService {
       attributes.get('given_name') ??
       (email ? email.split('@')[0] : undefined);
 
+    let user = await this.prisma.user.findUnique({ where: { id: cognitoSub } });
+
+    if (!user) user = await this.prisma.user.findUnique({ where: { googleId: cognitoSub } });
+
+    if (!email && user) {
+      return {
+        sub: user.id,
+        userId: user.id,
+        cognitoSub,
+        email: user.email,
+        name: user.name,
+        username,
+        role: user.role,
+      };
+    }
+
     if (!email) {
       throw new UnauthorizedException(
         'Your sign-in provider did not share an email address. Please check the Cognito email/profile scopes and Google attribute mapping.',
       );
     }
-
-    let user = await this.prisma.user.findUnique({ where: { id: cognitoSub } });
 
     if (!user) user = await this.prisma.user.findUnique({ where: { email } });
 
