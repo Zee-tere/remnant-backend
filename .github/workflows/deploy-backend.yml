@@ -1,0 +1,47 @@
+name: Deploy Remnant Backend
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  id-token: write
+  contents: read
+concurrency:
+  group: remnant-backend-production
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Build
+        run: npm run build
+      - name: Generate Prisma Client
+        run: npx prisma generate
+      - name: Prune dev dependencies
+        run: npm prune --omit=dev
+      - name: Create deployment package
+        run: zip -r ../function.zip dist node_modules package.json package-lock.json prisma
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: us-east-1
+      - name: Upload to S3
+        run: aws s3 cp ../function.zip s3://remnant-deployments-158128612346/remnant-api/function.zip
+      - name: Update Lambda function
+        run: |
+          aws lambda update-function-code \
+            --function-name remnant-api \
+            --s3-bucket remnant-deployments-158128612346 \
+            --s3-key remnant-api/function.zip
+      - name: Wait for update to complete
+        run: aws lambda wait function-updated --function-name remnant-api
