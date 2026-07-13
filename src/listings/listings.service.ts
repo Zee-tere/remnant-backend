@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, ForbiddenException } from '@nestjs/common';
+import { Injectable, NotFoundException, ForbiddenException, Logger } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateListingDto, UpdateListingDto } from './listings.dto';
 import { Prisma } from '@prisma/client';
@@ -8,6 +8,8 @@ import { randomUUID } from 'crypto';
 
 @Injectable()
 export class ListingsService {
+  private readonly logger = new Logger(ListingsService.name);
+
   constructor(
     private prisma: PrismaService,
     private matchingService: MatchingService,
@@ -48,8 +50,7 @@ export class ListingsService {
       include: { user: { select: { id: true, name: true, avatarUrl: true, trustTier: true } } },
     });
 
-    await this.storeListingEmbedding(listing);
-    await this.matchingService.runMatchForListing(listing.id, 'listing_created');
+    this.scheduleListingMatching(listing.id, 'listing_created');
     return listing;
   }
 
@@ -176,8 +177,7 @@ export class ListingsService {
       include: { user: { select: { id: true, name: true, avatarUrl: true, trustTier: true } } },
     });
 
-    await this.storeListingEmbedding(updated);
-    await this.matchingService.runMatchForListing(updated.id, 'listing_updated');
+    this.scheduleListingMatching(updated.id, 'listing_updated');
     return updated;
   }
 
@@ -308,5 +308,13 @@ export class ListingsService {
           "lastMatchedAt" = null
       WHERE id = ${listing.id}
     `;
+  }
+
+  private scheduleListingMatching(listingId: string, reason: string) {
+    try {
+      this.matchingService.scheduleMatchForListing(listingId, reason);
+    } catch (error) {
+      this.logger.error(`Could not schedule matching for listing ${listingId}`, error);
+    }
   }
 }

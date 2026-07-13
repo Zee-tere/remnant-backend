@@ -11,6 +11,7 @@ import {
   CognitoIdentityProviderClient,
   GetUserCommand,
   InitiateAuthCommand,
+  AdminInitiateAuthCommand,
   ConfirmSignUpCommand,
   SignUpCommand,
 } from '@aws-sdk/client-cognito-identity-provider';
@@ -107,16 +108,22 @@ export class AuthService {
     const email = this.normalizeEmail(dto.email);
 
     try {
-      const result = await this.cognitoClient.send(
-        new InitiateAuthCommand({
-          ClientId: clientId,
-          AuthFlow: 'USER_PASSWORD_AUTH',
-          AuthParameters: {
-            USERNAME: email,
-            PASSWORD: dto.password,
-          },
-        }),
-      );
+      let result;
+      try {
+        result = await this.cognitoClient.send(
+          new InitiateAuthCommand({
+            ClientId: clientId,
+            AuthFlow: 'USER_PASSWORD_AUTH',
+            AuthParameters: {
+              USERNAME: email,
+              PASSWORD: dto.password,
+            },
+          }),
+        );
+      } catch (error) {
+        if (!this.isUserPasswordFlowDisabled(error)) throw error;
+        result = await this.adminPasswordLogin(email, dto.password);
+      }
 
       const accessToken = result.AuthenticationResult?.AccessToken;
       if (!accessToken) throw new UnauthorizedException('Login could not be completed.');
@@ -277,13 +284,36 @@ export class AuthService {
     return clientId;
   }
 
+  private getCognitoUserPoolId() {
+    const userPoolId = this.configService.get<string>('COGNITO_USER_POOL_ID');
+    if (!userPoolId) throw new InternalServerErrorException('Sign-in is not configured.');
+    return userPoolId;
+  }
+
+  private adminPasswordLogin(email: string, password: string) {
+    return this.cognitoClient.send(
+      new AdminInitiateAuthCommand({
+        UserPoolId: this.getCognitoUserPoolId(),
+        ClientId: this.getCognitoClientId(),
+        AuthFlow: 'ADMIN_USER_PASSWORD_AUTH',
+        AuthParameters: {
+          USERNAME: email,
+          PASSWORD: password,
+        },
+      }),
+    );
+  }
+
+  private isUserPasswordFlowDisabled(error: unknown) {
+    const message = (error as { message?: string }).message ?? '';
+    return /USER_PASSWORD_AUTH flow not enabled/i.test(message);
+  }
+
   private getIdTokenVerifier() {
     if (this.idTokenVerifier) return this.idTokenVerifier;
 
-    const userPoolId = this.configService.get<string>('COGNITO_USER_POOL_ID');
+    const userPoolId = this.getCognitoUserPoolId();
     const clientId = this.getCognitoClientId();
-
-    if (!userPoolId) throw new InternalServerErrorException('Sign-in is not configured.');
 
     this.idTokenVerifier = CognitoJwtVerifier.create({
       userPoolId,
@@ -297,10 +327,8 @@ export class AuthService {
   private getAccessTokenVerifier() {
     if (this.accessTokenVerifier) return this.accessTokenVerifier;
 
-    const userPoolId = this.configService.get<string>('COGNITO_USER_POOL_ID');
+    const userPoolId = this.getCognitoUserPoolId();
     const clientId = this.getCognitoClientId();
-
-    if (!userPoolId) throw new InternalServerErrorException('Sign-in is not configured.');
 
     this.accessTokenVerifier = CognitoJwtVerifier.create({
       userPoolId,
@@ -329,7 +357,19 @@ export class AuthService {
 
     if (/USER_PASSWORD_AUTH flow not enabled/i.test(rawMessage)) {
       return new InternalServerErrorException(
-        'Password login is not enabled for the current Cognito app client. Enable ALLOW_USER_PASSWORD_AUTH or update Lambda to the correct public client id.',
+        'Password login is not enabled for the current Cognito app client. Enable ALLOW_USER_PASSWORD_AUTH or ALLOW_ADMIN_USER_PASSWORD_AUTH on the public app client.',
+      );
+    }
+
+    if (/ADMIN_USER_PASSWORD_AUTH flow not enabled/i.test(rawMessage)) {
+      return new InternalServerErrorException(
+        'Backend password login fallback is not enabled for the current Cognito app client. Enable ALLOW_ADMIN_USER_PASSWORD_AUTH or ALLOW_USER_PASSWORD_AUTH.',
+      );
+    }
+
+    if (maybeError.name === 'AccessDeniedException' && /AdminInitiateAuth/i.test(rawMessage)) {
+      return new InternalServerErrorException(
+        'Lambda is not allowed to run Cognito AdminInitiateAuth. Add cognito-idp:AdminInitiateAuth to remnant-lambda-role or enable USER_PASSWORD_AUTH on the app client.',
       );
     }
 

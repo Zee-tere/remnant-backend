@@ -36,6 +36,7 @@ export class S3Service {
   private bucketName: string;
   private region: string;
   private publicBaseUrl?: string;
+  private credentialMode: 'default-provider' | 'env-static' | 'env-session';
 
   constructor(private readonly configService: ConfigService) {
     this.bucketName = this.configService.get<string>('AWS_S3_BUCKET')?.trim() ?? '';
@@ -44,6 +45,8 @@ export class S3Service {
 
     const accessKeyId = this.configService.get<string>('AWS_ACCESS_KEY_ID');
     const secretAccessKey = this.configService.get<string>('AWS_SECRET_ACCESS_KEY');
+    const sessionToken = this.configService.get<string>('AWS_SESSION_TOKEN');
+    this.credentialMode = accessKeyId && secretAccessKey ? (sessionToken ? 'env-session' : 'env-static') : 'default-provider';
 
     this.s3Client = new S3Client({
       region: this.region,
@@ -52,6 +55,7 @@ export class S3Service {
             credentials: {
               accessKeyId,
               secretAccessKey,
+              ...(sessionToken ? { sessionToken } : {}),
             },
           }
         : {}),
@@ -120,6 +124,7 @@ export class S3Service {
         bucket: null,
         region: this.region,
         publicBaseUrlConfigured: Boolean(this.publicBaseUrl),
+        credentialMode: this.credentialMode,
         bucketReachable: false,
         message: 'AWS_S3_BUCKET is not set on Lambda.',
       };
@@ -132,6 +137,7 @@ export class S3Service {
         bucket: this.bucketName,
         region: this.region,
         publicBaseUrlConfigured: Boolean(this.publicBaseUrl),
+        credentialMode: this.credentialMode,
         bucketReachable: true,
         message: 'Upload bucket is configured and reachable from Lambda.',
       };
@@ -142,6 +148,7 @@ export class S3Service {
         bucket: this.bucketName,
         region: this.region,
         publicBaseUrlConfigured: Boolean(this.publicBaseUrl),
+        credentialMode: this.credentialMode,
         bucketReachable: false,
         errorName: maybeError.name ?? 'UnknownError',
         statusCode: maybeError.$metadata?.httpStatusCode ?? null,
