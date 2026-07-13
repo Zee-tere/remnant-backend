@@ -1,4 +1,4 @@
-import { IsNotEmpty, IsString } from 'class-validator';
+import { IsNotEmpty, IsOptional, IsString } from 'class-validator';
 
 export class HostedSessionDto {
   @IsNotEmpty()
@@ -8,4 +8,8 @@ export class HostedSessionDto {
   @IsNotEmpty()
   @IsString()
   idToken: string;
+
+  @IsOptional()
+  @IsString()
+  refreshToken?: string;
 }

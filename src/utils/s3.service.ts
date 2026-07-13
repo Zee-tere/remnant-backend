@@ -1,5 +1,6 @@
 import { Injectable, InternalServerErrorException, BadRequestException, ServiceUnavailableException } from '@nestjs/common';
-import { S3Client, PutObjectCommand, DeleteObjectCommand, HeadObjectCommand, HeadBucketCommand } from '@aws-sdk/client-s3';
+import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand, HeadObjectCommand, HeadBucketCommand } from '@aws-sdk/client-s3';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { ConfigService } from '@nestjs/config';
 import { v4 as uuidv4 } from 'uuid';
 
@@ -37,6 +38,7 @@ export class S3Service {
   private region: string;
   private publicBaseUrl?: string;
   private credentialMode: 'default-provider' | 'env-static' | 'env-session';
+  private readonly readableUrlCache = new Map<string, { url: string; refreshAt: number }>();
 
   constructor(private readonly configService: ConfigService) {
     this.bucketName = this.configService.get<string>('AWS_S3_BUCKET')?.trim() ?? '';
@@ -157,6 +159,46 @@ export class S3Service {
             ? 'Lambda can see the bucket name but remnant-lambda-role needs bucket-level S3 permission such as s3:ListBucket and s3:GetBucketLocation.'
             : 'Lambda cannot reach the upload bucket. Check AWS_S3_BUCKET, AWS_REGION, bucket existence, and role permissions.',
       };
+    }
+  }
+
+  async getReadableUrl(storedUrl: string): Promise<string> {
+    if (!storedUrl || this.publicBaseUrl || storedUrl.startsWith('data:') || storedUrl.startsWith('blob:')) {
+      return storedUrl;
+    }
+
+    const key = this.getObjectKey(storedUrl);
+    if (!key || !this.bucketName) return storedUrl;
+
+    const cached = this.readableUrlCache.get(key);
+    if (cached && cached.refreshAt > Date.now()) return cached.url;
+
+    const url = await getSignedUrl(
+      this.s3Client,
+      new GetObjectCommand({ Bucket: this.bucketName, Key: key }),
+      { expiresIn: 3600 },
+    );
+    if (this.readableUrlCache.size >= 1000) this.readableUrlCache.clear();
+    this.readableUrlCache.set(key, { url, refreshAt: Date.now() + 50 * 60 * 1000 });
+    return url;
+  }
+
+  async getReadableUrls(storedUrls: string[]): Promise<string[]> {
+    return Promise.all(storedUrls.map((url) => this.getReadableUrl(url)));
+  }
+
+  getObjectKey(storedUrl: string): string | null {
+    try {
+      const url = new URL(storedUrl);
+      const expectedHosts = new Set([
+        `${this.bucketName}.s3.${this.region}.amazonaws.com`,
+        `${this.bucketName}.s3.amazonaws.com`,
+      ]);
+      if (!expectedHosts.has(url.hostname)) return null;
+      const key = decodeURIComponent(url.pathname.replace(/^\//, ''));
+      return key.startsWith('listings/') ? key : null;
+    } catch {
+      return storedUrl.startsWith('listings/') ? storedUrl : null;
     }
   }
 

@@ -5,7 +5,7 @@ import { APP_GUARD } from '@nestjs/core';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { AuthModule } from './auth/auth.module';
-import { PrismaService } from './prisma/prisma.service';
+import { PrismaModule } from './prisma/prisma.module';
 import { UserModule } from './user/user.module';
 import { ListingsModule } from './listings/listings.module';
 import { UploadModule } from './upload/upload.module';
@@ -22,6 +22,7 @@ import { validateEnvironment } from './config/env.validation';
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true, validate: validateEnvironment }),
+    PrismaModule,
     // ✅ Global rate limiting: 100 requests per minute per IP by default
     // Auth routes apply stricter limits via @Throttle() decorator
     ThrottlerModule.forRoot([
@@ -52,7 +53,6 @@ import { validateEnvironment } from './config/env.validation';
   controllers: [AppController],
   providers: [
     AppService,
-    PrismaService,
     // ✅ Apply ThrottlerGuard globally to all routes
     {
       provide: APP_GUARD,

@@ -11,6 +11,7 @@ import {
 import { MessagesService } from './messages.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { Request } from 'express';
+import { CreateMessageDto, StartConversationDto } from './messages.dto';
 
 @Controller('conversations')
 export class MessagesController {
@@ -26,11 +27,11 @@ export class MessagesController {
   @Post()
   @UseGuards(JwtAuthGuard)
   async startConversation(
-    @Body('listingId') listingId: string,
+    @Body() dto: StartConversationDto,
     @Req() req: Request,
   ) {
     const user = req.user as { sub: string };
-    return this.messagesService.startConversation(user.sub, listingId);
+    return this.messagesService.startConversation(user.sub, dto.listingId);
   }
 
   @Get(':id/messages')
@@ -44,12 +45,11 @@ export class MessagesController {
   @UseGuards(JwtAuthGuard)
   async createMessage(
     @Param('id') id: string,
-    @Body('content') content: string,
-    @Body('type') type: 'TEXT' | 'IMAGE' | 'OFFER' | 'SYSTEM' | undefined,
+    @Body() dto: CreateMessageDto,
     @Req() req: Request,
   ) {
     const user = req.user as { sub: string };
-    return this.messagesService.createMessage(id, user.sub, content, type ?? 'TEXT');
+    return this.messagesService.createMessage(id, user.sub, dto.content, dto.type);
   }
 
   @Patch(':id/read')

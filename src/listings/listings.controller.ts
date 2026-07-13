@@ -10,6 +10,7 @@ import {
   Req,
   UseGuards,
 } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { ListingsService } from './listings.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CreateListingDto, UpdateListingDto } from './listings.dto';
@@ -27,6 +28,7 @@ export class ListingsController {
   }
 
   @Post('guest')
+  @Throttle({ default: { limit: 4, ttl: 60000 } })
   async createGuest(@Body() dto: CreateListingDto) {
     return this.listingsService.createGuest(dto);
   }

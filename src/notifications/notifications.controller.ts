@@ -17,8 +17,8 @@ export class NotificationsController {
     const user = req.user as { sub: string };
     return this.notificationsService.getNotifications(
       user.sub,
-      page ? parseInt(page, 10) : 1,
-      limit ? parseInt(limit, 10) : 20,
+      Math.max(Number(page) || 1, 1),
+      Math.min(Math.max(Number(limit) || 20, 1), 50),
     );
   }
 

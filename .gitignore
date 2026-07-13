@@ -49,6 +49,8 @@ lambda-env.production.json
 /function.zip
 /dist-only.zip
 /function2-test
+/s3-listings-policy.json
+/cognito-admin-auth-policy.json
 
 # temp directory
 .temp

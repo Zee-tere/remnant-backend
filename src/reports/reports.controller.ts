@@ -2,7 +2,8 @@ import { Controller, Post, Body, Req, UseGuards } from '@nestjs/common';
 import { ReportsService } from './reports.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { Request } from 'express';
-import { ReportTarget } from '@prisma/client';
+import { Throttle } from '@nestjs/throttler';
+import { CreateReportDto } from './reports.dto';
 
 @Controller('reports')
 export class ReportsController {
@@ -10,8 +11,9 @@ export class ReportsController {
 
   @Post()
   @UseGuards(JwtAuthGuard)
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
   async createReport(
-    @Body() body: { targetType: ReportTarget; targetId: string; reason: string },
+    @Body() body: CreateReportDto,
     @Req() req: Request,
   ) {
     const user = req.user as { sub: string };

@@ -59,7 +59,13 @@ describe('MatchingService', () => {
       hashText: jest.fn().mockReturnValue('hash'),
     };
 
-    const service = new MatchingService(prisma as any, config as any, notifications as any, embedding as any);
+    const service = new MatchingService(
+      prisma as any,
+      config as any,
+      notifications as any,
+      embedding as any,
+      { getReadableUrls: jest.fn() } as any,
+    );
     const matches = await service.runMatchForListing(baseListing.id, 'test');
 
     expect(matches).toHaveLength(1);
@@ -94,6 +100,7 @@ describe('MatchingService', () => {
       config as any,
       { createNotification: jest.fn() } as any,
       { isConfigured: jest.fn().mockReturnValue(false) } as any,
+      { getReadableUrls: jest.fn() } as any,
     );
 
     await expect(service.updateMatchStatus('match-1', 'intruder', 'VIEWED')).rejects.toThrow('Not your match');

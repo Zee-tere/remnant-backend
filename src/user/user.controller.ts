@@ -2,6 +2,7 @@ import { Controller, Get, Put, Param, Body, Req, UseGuards } from '@nestjs/commo
 import { UserService } from './user.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { Request } from 'express';
+import { UpdateUserDto } from './user.dto';
 
 @Controller('users')
 export class UserController {
@@ -11,14 +12,14 @@ export class UserController {
   @UseGuards(JwtAuthGuard)
   async getMe(@Req() req: Request) {
     const user = req.user as { sub: string };
-    return this.userService.getUserById(user.sub);
+    return this.userService.getUserById(user.sub, true);
   }
 
   @Put('me')
   @UseGuards(JwtAuthGuard)
   async updateMe(
     @Req() req: Request,
-    @Body() data: { name?: string; bio?: string; city?: string; avatarUrl?: string },
+    @Body() data: UpdateUserDto,
   ) {
     const user = req.user as { sub: string };
     return this.userService.updateUser(user.sub, data);

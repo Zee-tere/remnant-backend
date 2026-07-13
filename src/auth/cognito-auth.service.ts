@@ -58,6 +58,11 @@ export class CognitoAuthService {
 
   private async ensureLocalUser(payload: CognitoPayload, accessToken: string): Promise<AuthenticatedUser> {
     const cognitoSub = payload.sub;
+    let user = await this.prisma.user.findUnique({ where: { id: cognitoSub } });
+    if (!user) user = await this.prisma.user.findUnique({ where: { googleId: cognitoSub } });
+
+    if (user) return this.toAuthenticatedUser(user, cognitoSub, payload.username ?? payload['cognito:username']);
+
     const attributes = await this.getUserAttributes(accessToken);
     const email = this.normalizeEmail(payload.email ?? attributes.get('email'));
     const username = payload.username ?? payload['cognito:username'] ?? attributes.get('username');
@@ -66,22 +71,6 @@ export class CognitoAuthService {
       attributes.get('name') ??
       attributes.get('given_name') ??
       (email ? email.split('@')[0] : undefined);
-
-    let user = await this.prisma.user.findUnique({ where: { id: cognitoSub } });
-
-    if (!user) user = await this.prisma.user.findUnique({ where: { googleId: cognitoSub } });
-
-    if (!email && user) {
-      return {
-        sub: user.id,
-        userId: user.id,
-        cognitoSub,
-        email: user.email,
-        name: user.name,
-        username,
-        role: user.role,
-      };
-    }
 
     if (!email) {
       throw new UnauthorizedException(
@@ -125,6 +114,15 @@ export class CognitoAuthService {
       }
     }
 
+    return this.toAuthenticatedUser(user, cognitoSub, username);
+  }
+
+  private toAuthenticatedUser(
+    user: { id: string; email: string; name: string; role: string; bannedAt?: Date | null },
+    cognitoSub: string,
+    username?: string,
+  ): AuthenticatedUser {
+    if (user.bannedAt) throw new UnauthorizedException('This account is suspended.');
     return {
       sub: user.id,
       userId: user.id,

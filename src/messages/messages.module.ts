@@ -1,12 +1,13 @@
 import { Module } from '@nestjs/common';
 import { MessagesService } from './messages.service';
 import { MessagesController } from './messages.controller';
-import { PrismaService } from '../prisma/prisma.service';
 import { AuthModule } from '../auth/auth.module';
+import { NotificationsModule } from '../notifications/notifications.module';
+import { UploadModule } from '../upload/upload.module';
 
 @Module({
-  imports: [AuthModule],
+  imports: [AuthModule, NotificationsModule, UploadModule],
   controllers: [MessagesController],
-  providers: [MessagesService, PrismaService],
+  providers: [MessagesService],
 })
 export class MessagesModule {}

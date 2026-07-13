@@ -7,6 +7,12 @@ export class ReportsService {
   constructor(private prisma: PrismaService) {}
 
   async createReport(reporterId: string, targetType: ReportTarget, targetId: string, reason: string) {
+    const targetExists =
+      targetType === 'LISTING'
+        ? await this.prisma.listing.findUnique({ where: { id: targetId }, select: { id: true } })
+        : await this.prisma.user.findUnique({ where: { id: targetId }, select: { id: true } });
+    if (!targetExists) throw new NotFoundException('Reported item was not found');
+
     return this.prisma.report.create({
       data: { reporterId, targetType, targetId, reason },
     });

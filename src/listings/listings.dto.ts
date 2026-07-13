@@ -6,20 +6,31 @@ import {
   IsDecimal,
   IsArray,
   IsObject,
+  IsIn,
+  MaxLength,
+  MinLength,
+  ArrayMaxSize,
+  IsUrl,
 } from 'class-validator';
 import { IntentionTag, Condition } from '@prisma/client';
+import { NIGERIAN_STATES } from '../config/nigeria-locations';
+import { LISTING_CATEGORIES } from '../config/listing-taxonomy';
 
 export class CreateListingDto {
   @IsString()
   @IsNotEmpty()
+  @MaxLength(120)
   title: string;
 
   @IsString()
   @IsNotEmpty()
+  @MinLength(10)
+  @MaxLength(2000)
   description: string;
 
   @IsString()
   @IsNotEmpty()
+  @IsIn(LISTING_CATEGORIES)
   category: string;
 
   @IsEnum(Condition)
@@ -40,12 +51,14 @@ export class CreateListingDto {
   @IsString()
   price?: string;
 
-  @IsOptional()
   @IsString()
-  city?: string;
+  @IsIn(NIGERIAN_STATES)
+  city: string;
 
   @IsOptional()
   @IsArray()
+  @ArrayMaxSize(8)
+  @IsUrl({ require_protocol: true }, { each: true })
   @IsString({ each: true })
   images?: string[];
 }
@@ -61,6 +74,7 @@ export class UpdateListingDto {
 
   @IsOptional()
   @IsString()
+  @IsIn(LISTING_CATEGORIES)
   category?: string;
 
   @IsOptional()
@@ -85,10 +99,13 @@ export class UpdateListingDto {
 
   @IsOptional()
   @IsString()
+  @IsIn(NIGERIAN_STATES)
   city?: string;
 
   @IsOptional()
   @IsArray()
+  @ArrayMaxSize(8)
+  @IsUrl({ require_protocol: true }, { each: true })
   @IsString({ each: true })
   images?: string[];
 }

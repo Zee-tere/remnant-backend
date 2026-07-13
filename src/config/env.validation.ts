@@ -59,17 +59,11 @@ export function validateEnvironment(config: Environment) {
       'ALLOWED_ORIGINS',
       'AWS_REGION',
       'AWS_S3_BUCKET',
-      'EMAIL_FROM',
-      'OPENAI_API_KEY',
-      'SUPABASE_JWT_SECRET',
-      'SUPABASE_URL',
       'ESCROW_ENABLED',
     ].forEach((key) => assertPresent(config, key, errors));
 
     assertSupabaseDatabase(config, errors);
     assertProductionUrl(config, 'FRONTEND_URL', errors);
-    assertProductionUrl(config, 'SUPABASE_URL', errors);
-
     if (read(config, 'ESCROW_ENABLED') === 'true') {
       ['ESCROW_API_EMAIL', 'ESCROW_API_KEY', 'ESCROW_WEBHOOK_SECRET'].forEach((key) =>
         assertPresent(config, key, errors),

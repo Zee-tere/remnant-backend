@@ -125,39 +125,44 @@ model User {
   achievements          UserAchievement[]
   reports               Report[]
   savedListings         SavedListing[]
+
+  @@index([city])
 }
 
 model Listing {
-  id             String        @id @default(uuid())
-  userId         String
-  user           User          @relation(fields: [userId], references: [id])
-  title          String
-  description    String
-  slug           String        @unique
-  category       String
-  condition      Condition
-  intentionTag   IntentionTag
-  pairingKeyword String?
+  id                      String                       @id @default(uuid())
+  userId                  String
+  user                    User                         @relation(fields: [userId], references: [id])
+  title                   String
+  description             String
+  slug                    String                       @unique
+  category                String
+  condition               Condition
+  intentionTag            IntentionTag
+  pairingKeyword          String?
   compatibilityAttributes Json?
-  embedding     Unsupported("vector(1536)")?
-  embeddingHash String?
-  embeddingId     String?
-  embeddingTextHash String?
-  lastMatchedAt   DateTime?
-  price          Decimal?
-  status         ListingStatus @default(ACTIVE)
-  images         String[]
-  city           String?
-  viewCount      Int           @default(0)
-  expiresAt      DateTime?
-  createdAt      DateTime      @default(now())
-  updatedAt      DateTime      @updatedAt
+  embedding               Unsupported("vector(1536)")?
+  embeddingHash           String?
+  embeddingId             String?
+  embeddingTextHash       String?
+  lastMatchedAt           DateTime?
+  price                   Decimal?
+  status                  ListingStatus                @default(ACTIVE)
+  images                  String[]
+  city                    String?
+  viewCount               Int                          @default(0)
+  expiresAt               DateTime?
+  createdAt               DateTime                     @default(now())
+  updatedAt               DateTime                     @updatedAt
 
   matchesAsA    Match[]        @relation("MatchA")
   matchesAsB    Match[]        @relation("MatchB")
   conversations Conversation[]
   transactions  Transaction[]
   savedBy       SavedListing[]
+
+  @@index([status, createdAt])
+  @@index([status, category, city, createdAt])
 }
 
 model SavedListing {
@@ -172,19 +177,19 @@ model SavedListing {
 }
 
 model Match {
-  id         String      @id @default(uuid())
-  listingAId String
-  listingBId String
-  canonicalKey String    @unique
-  listingA   Listing     @relation("MatchA", fields: [listingAId], references: [id])
-  listingB   Listing     @relation("MatchB", fields: [listingBId], references: [id])
-  score      Float
-  attributeScore Float   @default(0)
-  semanticScore  Float   @default(0)
+  id             String      @id @default(uuid())
+  listingAId     String
+  listingBId     String
+  canonicalKey   String      @unique
+  listingA       Listing     @relation("MatchA", fields: [listingAId], references: [id])
+  listingB       Listing     @relation("MatchB", fields: [listingBId], references: [id])
+  score          Float
+  attributeScore Float       @default(0)
+  semanticScore  Float       @default(0)
   scoreBreakdown Json?
-  status     MatchStatus @default(PENDING)
-  notifiedAt DateTime?
-  createdAt  DateTime    @default(now())
+  status         MatchStatus @default(PENDING)
+  notifiedAt     DateTime?
+  createdAt      DateTime    @default(now())
 
   @@index([listingAId])
   @@index([listingBId])
@@ -201,6 +206,10 @@ model Conversation {
   seller    User      @relation("SellerConversations", fields: [sellerId], references: [id])
   messages  Message[]
   createdAt DateTime  @default(now())
+
+  @@unique([listingId, buyerId, sellerId])
+  @@index([buyerId, createdAt])
+  @@index([sellerId, createdAt])
 }
 
 model Message {
@@ -212,34 +221,36 @@ model Message {
   content        String
   readAt         DateTime?
   createdAt      DateTime     @default(now())
+
+  @@index([conversationId, createdAt])
 }
 
 model Transaction {
-  id                  String            @id @default(uuid())
-  listingId           String
-  buyerId             String
-  sellerId            String
-  listing             Listing           @relation(fields: [listingId], references: [id])
-  buyer               User              @relation("BuyerTransactions", fields: [buyerId], references: [id])
-  seller              User              @relation("SellerTransactions", fields: [sellerId], references: [id])
-  amount              Decimal
-  platformFee         Decimal
-  escrowTransactionId String?
-  escrowCheckoutUrl   String?
+  id                   String            @id @default(uuid())
+  listingId            String
+  buyerId              String
+  sellerId             String
+  listing              Listing           @relation(fields: [listingId], references: [id])
+  buyer                User              @relation("BuyerTransactions", fields: [buyerId], references: [id])
+  seller               User              @relation("SellerTransactions", fields: [sellerId], references: [id])
+  amount               Decimal
+  platformFee          Decimal
+  escrowTransactionId  String?
+  escrowCheckoutUrl    String?
   escrowProviderStatus String?
-  status              TransactionStatus @default(INITIATED)
-  trackingInfo        String?
-  fundedAt            DateTime?
-  shippedAt           DateTime?
-  receivedAt          DateTime?
-  completedAt         DateTime?
-  disputedAt          DateTime?
-  refundedAt          DateTime?
-  review              Review?
-  createdAt           DateTime          @default(now())
-  updatedAt           DateTime          @updatedAt
+  status               TransactionStatus @default(INITIATED)
+  trackingInfo         String?
+  fundedAt             DateTime?
+  shippedAt            DateTime?
+  receivedAt           DateTime?
+  completedAt          DateTime?
+  disputedAt           DateTime?
+  refundedAt           DateTime?
+  reviews              Review[]
+  createdAt            DateTime          @default(now())
+  updatedAt            DateTime          @updatedAt
 
-  escrowEvents        EscrowEvent[]
+  escrowEvents EscrowEvent[]
 
   @@index([buyerId, createdAt])
   @@index([sellerId, createdAt])
@@ -248,13 +259,13 @@ model Transaction {
 }
 
 model EscrowEvent {
-  id            String   @id @default(uuid())
-  transactionId String?
-  provider      String
-  eventType     String
+  id              String   @id @default(uuid())
+  transactionId   String?
+  provider        String
+  eventType       String
   providerEventId String?
-  payload       Json
-  receivedAt    DateTime @default(now())
+  payload         Json
+  receivedAt      DateTime @default(now())
 
   transaction Transaction? @relation(fields: [transactionId], references: [id])
 
@@ -264,7 +275,7 @@ model EscrowEvent {
 
 model Review {
   id            String      @id @default(uuid())
-  transactionId String      @unique
+  transactionId String
   reviewerId    String
   revieweeId    String
   transaction   Transaction @relation(fields: [transactionId], references: [id])
@@ -273,6 +284,9 @@ model Review {
   rating        Int
   comment       String?
   createdAt     DateTime    @default(now())
+
+  @@unique([transactionId, reviewerId])
+  @@index([revieweeId, createdAt])
 }
 
 model Notification {
@@ -285,6 +299,8 @@ model Notification {
   link      String?
   isRead    Boolean          @default(false)
   createdAt DateTime         @default(now())
+
+  @@index([userId, isRead, createdAt])
 }
 
 model UserAchievement {

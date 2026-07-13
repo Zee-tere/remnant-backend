@@ -35,10 +35,21 @@ export class TransactionsService {
     if (!listing) throw new NotFoundException('Listing not found');
     if (listing.status !== 'ACTIVE') throw new BadRequestException('Listing is not active');
     if (listing.userId === buyerId) throw new ForbiddenException('Cannot buy your own listing');
-    if (!['SELL', 'DONATE', 'RECYCLE'].includes(listing.intentionTag)) {
-      throw new BadRequestException('This listing cannot be purchased through escrow');
+    if (listing.user.email.endsWith('@guest.remnant.local')) {
+      throw new BadRequestException('The seller must create a profile before an order can be placed.');
     }
+    if (listing.intentionTag !== 'SELL') throw new BadRequestException('Only sale listings can create an order');
     if (!listing.price) throw new BadRequestException('Listing has no price');
+
+    const existingTransaction = await this.prisma.transaction.findFirst({
+      where: {
+        listingId,
+        buyerId,
+        status: { in: ['INITIATED', 'FUNDED', 'SHIPPED', 'RECEIVED', 'DISPUTED'] },
+      },
+      include: this.transactionIncludes(),
+    });
+    if (existingTransaction) return existingTransaction;
 
     const amount = listing.price;
     const platformFee = new Prisma.Decimal(

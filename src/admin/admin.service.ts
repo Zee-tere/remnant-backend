@@ -1,7 +1,8 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { TransactionStatus } from '@prisma/client';
+import { ListingStatus, TransactionStatus, UserRole } from '@prisma/client';
 import { TransactionsService } from '../transactions/transactions.service';
+import { AdminUpdateUserDto } from './admin.dto';
 
 @Injectable()
 export class AdminService {
@@ -44,10 +45,13 @@ export class AdminService {
     return { users, total, page, limit };
   }
 
-  async updateUser(id: string, data: { role?: 'USER' | 'MODERATOR' | 'ADMIN'; bannedAt?: Date | null }) {
+  async updateUser(id: string, data: AdminUpdateUserDto) {
     return this.prisma.user.update({
       where: { id },
-      data,
+      data: {
+        role: data.role as UserRole | undefined,
+        bannedAt: data.bannedAt === null ? null : data.bannedAt ? new Date(data.bannedAt) : undefined,
+      },
       select: { id: true, email: true, name: true, role: true, bannedAt: true },
     });
   }
@@ -60,7 +64,7 @@ export class AdminService {
     });
   }
 
-  async updateListingStatus(id: string, status: 'ACTIVE' | 'PAUSED' | 'COMPLETED' | 'EXPIRED' | 'FLAGGED') {
+  async updateListingStatus(id: string, status: ListingStatus) {
     return this.prisma.listing.update({ where: { id }, data: { status } });
   }
 

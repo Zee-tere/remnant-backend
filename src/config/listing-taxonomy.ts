@@ -1,0 +1,16 @@
+export const LISTING_CATEGORIES = [
+  'Electronics & Gadgets',
+  'Furniture & Home Decor',
+  'Clothing & Fashion',
+  'Shoes & Footwear',
+  'Accessories & Jewelry',
+  'Vehicles & Auto Parts',
+  'Books & Education',
+  'Hobbies & Leisure',
+  'Sports & Outdoor',
+  'Kitchen & Home Essentials',
+  'Tools & DIY',
+  'Collectibles & Antiques',
+  'Toys & Games',
+  'Other',
+] as const;

@@ -1,10 +1,14 @@
-import { Injectable, NotFoundException, ForbiddenException, Logger } from '@nestjs/common';
+import { Injectable, NotFoundException, ForbiddenException, Logger, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateListingDto, UpdateListingDto } from './listings.dto';
 import { Prisma } from '@prisma/client';
 import { MatchingService } from '../matching/matching.service';
 import { EmbeddingService } from '../matching/embedding.service';
 import { randomUUID } from 'crypto';
+import { S3Service } from '../utils/s3.service';
+import { IntentionTag } from '@prisma/client';
+import { NIGERIAN_STATES } from '../config/nigeria-locations';
+import { LISTING_CATEGORIES } from '../config/listing-taxonomy';
 
 @Injectable()
 export class ListingsService {
@@ -14,6 +18,7 @@ export class ListingsService {
     private prisma: PrismaService,
     private matchingService: MatchingService,
     private embeddingService: EmbeddingService,
+    private s3Service: S3Service,
   ) {}
 
   private generateSlug(title: string): string {
@@ -28,6 +33,7 @@ export class ListingsService {
   }
 
   async create(userId: string, dto: CreateListingDto) {
+    this.assertManagedImages(dto.images);
     const slug = this.generateSlug(dto.title);
 
     const data: Prisma.ListingCreateInput = {
@@ -51,7 +57,7 @@ export class ListingsService {
     });
 
     this.scheduleListingMatching(listing.id, 'listing_created');
-    return listing;
+    return this.withReadableImages(listing);
   }
 
   async createGuest(dto: CreateListingDto) {
@@ -74,8 +80,8 @@ export class ListingsService {
     page?: number;
     limit?: number;
   }) {
-    const page = filters?.page || 1;
-    const limit = filters?.limit || 20;
+    const page = Math.max(Number(filters?.page) || 1, 1);
+    const limit = Math.min(Math.max(Number(filters?.limit) || 20, 1), 50);
     const skip = (page - 1) * limit;
 
     const where: Prisma.ListingWhereInput = {
@@ -83,14 +89,28 @@ export class ListingsService {
     };
 
     if (filters?.category) {
-      where.category = { contains: filters.category, mode: 'insensitive' };
+      if (!LISTING_CATEGORIES.includes(filters.category as (typeof LISTING_CATEGORIES)[number])) {
+        throw new BadRequestException('Unknown listing category');
+      }
+      where.category = filters.category;
     }
-    if (filters?.intentionTag) where.intentionTag = filters.intentionTag as any;
-    if (filters?.city) where.city = { contains: filters.city, mode: 'insensitive' };
+    if (filters?.intentionTag) {
+      if (!Object.values(IntentionTag).includes(filters.intentionTag as IntentionTag)) {
+        throw new BadRequestException('Unknown listing intention');
+      }
+      where.intentionTag = filters.intentionTag as IntentionTag;
+    }
+    if (filters?.city) {
+      if (!NIGERIAN_STATES.includes(filters.city as (typeof NIGERIAN_STATES)[number])) {
+        throw new BadRequestException('Unknown Nigerian state');
+      }
+      where.city = filters.city;
+    }
     if (filters?.search) {
+      const search = filters.search.trim().slice(0, 100);
       where.OR = [
-        { title: { contains: filters.search, mode: 'insensitive' } },
-        { description: { contains: filters.search, mode: 'insensitive' } },
+        { title: { contains: search, mode: 'insensitive' } },
+        { description: { contains: search, mode: 'insensitive' } },
       ];
     }
 
@@ -107,7 +127,13 @@ export class ListingsService {
       this.prisma.listing.count({ where }),
     ]);
 
-    return { listings, total, page, limit, totalPages: Math.ceil(total / limit) };
+    return {
+      listings: await Promise.all(listings.map((listing) => this.withReadableImages(listing))),
+      total,
+      page,
+      limit,
+      totalPages: Math.ceil(total / limit),
+    };
   }
 
   async findOne(id: string) {
@@ -125,7 +151,7 @@ export class ListingsService {
       data: { viewCount: { increment: 1 } },
     });
 
-    return listing;
+    return this.withReadableImages(listing);
   }
 
   async findBySlug(slug: string) {
@@ -142,17 +168,19 @@ export class ListingsService {
       data: { viewCount: { increment: 1 } },
     });
 
-    return listing;
+    return this.withReadableImages(listing);
   }
 
   async findByUser(userId: string) {
-    return this.prisma.listing.findMany({
+    const listings = await this.prisma.listing.findMany({
       where: { userId },
       orderBy: { createdAt: 'desc' },
     });
+    return Promise.all(listings.map((listing) => this.withReadableImages(listing)));
   }
 
   async update(id: string, userId: string, dto: UpdateListingDto) {
+    this.assertManagedImages(dto.images);
     const listing = await this.prisma.listing.findUnique({ where: { id } });
     if (!listing) throw new NotFoundException(`Listing not found`);
     if (listing.userId !== userId) throw new ForbiddenException('Not your listing');
@@ -178,7 +206,7 @@ export class ListingsService {
     });
 
     this.scheduleListingMatching(updated.id, 'listing_updated');
-    return updated;
+    return this.withReadableImages(updated);
   }
 
   async remove(id: string, userId: string) {
@@ -186,8 +214,11 @@ export class ListingsService {
     if (!listing) throw new NotFoundException(`Listing not found`);
     if (listing.userId !== userId) throw new ForbiddenException('Not your listing');
 
-    await this.prisma.listing.delete({ where: { id } });
-    return { message: 'Listing deleted' };
+    await this.prisma.listing.update({
+      where: { id },
+      data: { status: 'PAUSED' },
+    });
+    return { message: 'Listing removed from the marketplace' };
   }
 
   async saveListing(userId: string, listingId: string) {
@@ -220,7 +251,7 @@ export class ListingsService {
       },
       orderBy: { createdAt: 'desc' },
     });
-    return saved.map((s) => s.listing);
+    return Promise.all(saved.map((item) => this.withReadableImages(item.listing)));
   }
 
   async semanticSearch(params: {
@@ -252,7 +283,9 @@ export class ListingsService {
       ? Prisma.sql`AND l."intentionTag"::text = ${params.intent}`
       : Prisma.empty;
 
-    const results = await this.prisma.$queryRaw<Array<Record<string, unknown> & { relevance: number | string }>>`
+    const results = await this.prisma.$queryRaw<
+      Array<Record<string, unknown> & { images: string[]; relevance: number | string }>
+    >`
       SELECT l.*, (1 - (l.embedding <=> ${vector}::vector)) AS relevance
       FROM "Listing" l
       WHERE l.status = 'ACTIVE'
@@ -264,13 +297,27 @@ export class ListingsService {
       LIMIT ${limit}
     `;
 
-    return results
+    const listings = results
       .map((row) => {
         const relevance = Number(row.relevance);
         const { embedding: _embedding, ...listing } = row;
         return { ...listing, relevance };
       })
       .filter((row) => Number(row.relevance) > 0.5);
+    return Promise.all(listings.map((listing) => this.withReadableImages(listing)));
+  }
+
+  private async withReadableImages<T extends { images: string[] }>(listing: T): Promise<T> {
+    return {
+      ...listing,
+      images: await this.s3Service.getReadableUrls(listing.images ?? []),
+    };
+  }
+
+  private assertManagedImages(images?: string[]) {
+    if (images?.some((url) => !this.s3Service.getObjectKey(url))) {
+      throw new BadRequestException('Listing images must be uploaded through Remnant.');
+    }
   }
 
   private async storeListingEmbedding(listing: {

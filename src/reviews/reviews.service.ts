@@ -25,7 +25,9 @@ export class ReviewsService {
     }
 
     // Check if already reviewed
-    const existing = await this.prisma.review.findUnique({ where: { transactionId } });
+    const existing = await this.prisma.review.findUnique({
+      where: { transactionId_reviewerId: { transactionId, reviewerId } },
+    });
     if (existing) throw new BadRequestException('Transaction already reviewed');
 
     const revieweeId = tx.buyerId === reviewerId ? tx.sellerId : tx.buyerId;

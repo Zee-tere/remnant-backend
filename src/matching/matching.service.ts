@@ -4,6 +4,7 @@ import { IntentionTag, Listing, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { EmbeddingService } from './embedding.service';
+import { S3Service } from '../utils/s3.service';
 
 type CompatibilityAttributes = Record<string, unknown>;
 
@@ -61,6 +62,7 @@ export class MatchingService {
     private configService: ConfigService,
     private notificationsService: NotificationsService,
     private embeddingService: EmbeddingService,
+    private s3Service: S3Service,
   ) {
     this.threshold = parseFloat(this.configService.get<string>('MATCH_SCORE_THRESHOLD', '0.72'));
     this.attributeWeight = parseFloat(this.configService.get<string>('MATCH_ATTRIBUTE_WEIGHT', '0.65'));
@@ -141,7 +143,7 @@ export class MatchingService {
     });
     const ids = userListingIds.map((l) => l.id);
 
-    return this.prisma.match.findMany({
+    const matches = await this.prisma.match.findMany({
       where: {
         OR: [{ listingAId: { in: ids } }, { listingBId: { in: ids } }],
       },
@@ -155,6 +157,13 @@ export class MatchingService {
       },
       orderBy: [{ score: 'desc' }, { createdAt: 'desc' }],
     });
+    return Promise.all(
+      matches.map(async (match) => ({
+        ...match,
+        listingA: { ...match.listingA, images: await this.s3Service.getReadableUrls(match.listingA.images) },
+        listingB: { ...match.listingB, images: await this.s3Service.getReadableUrls(match.listingB.images) },
+      })),
+    );
   }
 
   async updateMatchStatus(id: string, userId: string, status: 'VIEWED' | 'DISMISSED') {

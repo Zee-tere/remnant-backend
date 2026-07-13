@@ -2,6 +2,7 @@ import { Controller, Post, Get, Param, Body, Req, UseGuards } from '@nestjs/comm
 import { ReviewsService } from './reviews.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { Request } from 'express';
+import { SubmitReviewDto } from './reviews.dto';
 
 @Controller('reviews')
 export class ReviewsController {
@@ -10,7 +11,7 @@ export class ReviewsController {
   @Post()
   @UseGuards(JwtAuthGuard)
   async submitReview(
-    @Body() body: { transactionId: string; rating: number; comment?: string },
+    @Body() body: SubmitReviewDto,
     @Req() req: Request,
   ) {
     const user = req.user as { sub: string };

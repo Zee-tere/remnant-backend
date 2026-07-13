@@ -2,6 +2,7 @@ import { Controller, Get, Patch, Param, Body, Req, UseGuards } from '@nestjs/com
 import { MatchingService } from './matching.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { Request } from 'express';
+import { UpdateMatchStatusDto } from './matching.dto';
 
 @Controller('matches')
 export class MatchingController {
@@ -18,10 +19,10 @@ export class MatchingController {
   @UseGuards(JwtAuthGuard)
   async updateMatchStatus(
     @Param('id') id: string,
-    @Body('status') status: 'VIEWED' | 'DISMISSED',
+    @Body() dto: UpdateMatchStatusDto,
     @Req() req: Request,
   ) {
     const user = req.user as { sub: string };
-    return this.matchingService.updateMatchStatus(id, user.sub, status);
+    return this.matchingService.updateMatchStatus(id, user.sub, dto.status);
   }
 }

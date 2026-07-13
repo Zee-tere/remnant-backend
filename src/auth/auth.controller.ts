@@ -5,6 +5,9 @@ import { AuthService } from './auth.service';
 import { ConfirmSignupDto } from './dto/confirm-signup.dto';
 import { HostedSessionDto } from './dto/hosted-session.dto';
 import { LoginDto } from './dto/login.dto';
+import { RefreshTokenDto } from './dto/refresh-token.dto';
+import { ForgotPasswordDto, ResetPasswordDto } from './dto/forgot-password.dto';
+import { HostedCodeDto } from './dto/hosted-code.dto';
 import { RegisterDto } from './dto/register.dto';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 
@@ -41,10 +44,16 @@ export class AuthController {
     return this.authService.hostedSession(dto);
   }
 
+  @Post('exchange-code')
+  @Throttle({ auth: { limit: 10, ttl: 60000 } })
+  exchangeHostedCode(@Body() dto: HostedCodeDto) {
+    return this.authService.exchangeHostedCode(dto);
+  }
+
   @Post('refresh')
   @Throttle({ auth: { limit: 10, ttl: 60000 } })
-  refresh() {
-    return this.authService.cognitoOnly();
+  refresh(@Body() dto: RefreshTokenDto) {
+    return this.authService.refresh(dto.refreshToken);
   }
 
   @Get('google')
@@ -59,14 +68,14 @@ export class AuthController {
 
   @Post('forgot-password')
   @Throttle({ auth: { limit: 3, ttl: 60000 } })
-  forgotPassword() {
-    return this.authService.cognitoOnly();
+  forgotPassword(@Body() dto: ForgotPasswordDto) {
+    return this.authService.forgotPassword(dto.email);
   }
 
   @Post('reset-password')
   @Throttle({ auth: { limit: 5, ttl: 60000 } })
-  resetPassword() {
-    return this.authService.cognitoOnly();
+  resetPassword(@Body() dto: ResetPasswordDto) {
+    return this.authService.resetPassword(dto.email, dto.code, dto.password);
   }
 
   @Get('me')

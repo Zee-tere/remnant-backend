@@ -1,85 +1,76 @@
-import { Controller, Get, Patch, Param, Body, Query, UseGuards, Post, Req } from '@nestjs/common';
-import { AdminService } from './admin.service';
-import { AdminGuard } from './admin.guard';
+import { Body, Controller, Get, Param, Patch, Post, Query, Req, UseGuards } from '@nestjs/common';
 import { Request } from 'express';
-import { TransactionStatus } from '@prisma/client';
+import { AdminGuard } from './admin.guard';
+import { AdminService } from './admin.service';
+import {
+  AdminListingStatusDto,
+  AdminTransactionStatusDto,
+  AdminUpdateUserDto,
+  ResolveReportDto,
+} from './admin.dto';
 
 @Controller('admin')
 @UseGuards(AdminGuard)
 export class AdminController {
-  constructor(private readonly adminService: AdminService) { }
+  constructor(private readonly adminService: AdminService) {}
 
   @Get('dashboard')
-  async getDashboard() {
+  getDashboard() {
     return this.adminService.getDashboard();
   }
 
   @Get('users')
-  async getUsers(
-    @Query('page') page?: string,
-    @Query('limit') limit?: string,
-    @Query('search') search?: string,
-  ) {
-    const parsedLimit = limit ? Math.min(parseInt(limit, 10), 100) : 20; // ✅ Max 100
+  getUsers(@Query('page') page?: string, @Query('limit') limit?: string, @Query('search') search?: string) {
     return this.adminService.getUsers(
-      page ? parseInt(page, 10) : 1,
-      parsedLimit,
-      search,
+      Math.max(Number(page) || 1, 1),
+      Math.min(Math.max(Number(limit) || 20, 1), 100),
+      search?.trim().slice(0, 100),
     );
   }
 
   @Patch('users/:id')
-  async updateUser(
-    @Param('id') id: string,
-    @Body() data: { role?: 'USER' | 'MODERATOR' | 'ADMIN'; bannedAt?: Date | null },
-  ) {
+  updateUser(@Param('id') id: string, @Body() data: AdminUpdateUserDto) {
     return this.adminService.updateUser(id, data);
   }
 
   @Get('listings/flagged')
-  async getFlaggedListings() {
+  getFlaggedListings() {
     return this.adminService.getFlaggedListings();
   }
 
   @Patch('listings/:id')
-  async updateListingStatus(
-    @Param('id') id: string,
-    @Body('status') status: 'ACTIVE' | 'PAUSED' | 'COMPLETED' | 'EXPIRED' | 'FLAGGED',
-  ) {
-    return this.adminService.updateListingStatus(id, status);
+  updateListingStatus(@Param('id') id: string, @Body() dto: AdminListingStatusDto) {
+    return this.adminService.updateListingStatus(id, dto.status);
   }
 
   @Get('transactions')
-  async getTransactions(@Query('page') page?: string, @Query('limit') limit?: string) {
-    const parsedLimit = limit ? Math.min(parseInt(limit, 10), 100) : 20; // ✅ Max 100
+  getTransactions(@Query('page') page?: string, @Query('limit') limit?: string) {
     return this.adminService.getAllTransactions(
-      page ? parseInt(page, 10) : 1,
-      parsedLimit,
+      Math.max(Number(page) || 1, 1),
+      Math.min(Math.max(Number(limit) || 20, 1), 100),
     );
   }
 
   @Post('transactions/:id/refund')
-  async refundTransaction(@Param('id') id: string, @Req() req: Request) {
-    const user = req.user as { sub: string };
-    return this.adminService.refundTransaction(id, user.sub);
+  refundTransaction(@Param('id') id: string, @Req() req: Request) {
+    return this.adminService.refundTransaction(id, req.user!.userId);
   }
 
   @Patch('transactions/:id')
-  async overrideTransactionStatus(@Param('id') id: string, @Body('status') status: TransactionStatus) {
-    return this.adminService.overrideTransactionStatus(id, status);
+  overrideTransactionStatus(@Param('id') id: string, @Body() dto: AdminTransactionStatusDto) {
+    return this.adminService.overrideTransactionStatus(id, dto.status);
   }
 
   @Get('reports')
-  async getReports(@Query('page') page?: string, @Query('limit') limit?: string) {
-    const parsedLimit = limit ? Math.min(parseInt(limit, 10), 100) : 20; // ✅ Max 100
+  getReports(@Query('page') page?: string, @Query('limit') limit?: string) {
     return this.adminService.getReports(
-      page ? parseInt(page, 10) : 1,
-      parsedLimit,
+      Math.max(Number(page) || 1, 1),
+      Math.min(Math.max(Number(limit) || 20, 1), 100),
     );
   }
 
   @Patch('reports/:id')
-  async resolveReport(@Param('id') id: string, @Body('resolution') resolution: string) {
-    return this.adminService.resolveReport(id, resolution);
+  resolveReport(@Param('id') id: string, @Body() dto: ResolveReportDto) {
+    return this.adminService.resolveReport(id, dto.resolution);
   }
 }

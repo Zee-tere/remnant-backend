@@ -1,5 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { UpdateUserDto } from './user.dto';
 
 const SAFE_USER_SELECT = {
   id: true,
@@ -20,11 +21,22 @@ const SAFE_USER_SELECT = {
 export class UserService {
   constructor(private prisma: PrismaService) {}
 
-  async getUserById(id: string) {
+  async getUserById(id: string, includePrivate = false) {
     const user = await this.prisma.user.findUnique({
       where: { id },
       select: {
-        ...SAFE_USER_SELECT,
+        ...(includePrivate
+          ? SAFE_USER_SELECT
+          : {
+              id: true,
+              name: true,
+              avatarUrl: true,
+              bio: true,
+              city: true,
+              trustTier: true,
+              points: true,
+              createdAt: true,
+            }),
         _count: {
           select: {
             listings: true,
@@ -37,7 +49,7 @@ export class UserService {
     return user;
   }
 
-  async updateUser(id: string, data: { name?: string; bio?: string; city?: string; avatarUrl?: string }) {
+  async updateUser(id: string, data: UpdateUserDto) {
     return this.prisma.user.update({
       where: { id },
       data,

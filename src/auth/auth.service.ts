@@ -9,11 +9,12 @@ import {
 import { ConfigService } from '@nestjs/config';
 import {
   CognitoIdentityProviderClient,
-  GetUserCommand,
   InitiateAuthCommand,
   AdminInitiateAuthCommand,
   ConfirmSignUpCommand,
   SignUpCommand,
+  ForgotPasswordCommand,
+  ConfirmForgotPasswordCommand,
 } from '@aws-sdk/client-cognito-identity-provider';
 import { CognitoJwtVerifier } from 'aws-jwt-verify';
 import * as jwt from 'jsonwebtoken';
@@ -21,6 +22,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { AuthenticatedUser } from './auth.types';
 import { ConfirmSignupDto } from './dto/confirm-signup.dto';
 import { HostedSessionDto } from './dto/hosted-session.dto';
+import { HostedCodeDto } from './dto/hosted-code.dto';
 import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
 
@@ -126,13 +128,15 @@ export class AuthService {
       }
 
       const accessToken = result.AuthenticationResult?.AccessToken;
-      if (!accessToken) throw new UnauthorizedException('Login could not be completed.');
+      const idToken = result.AuthenticationResult?.IdToken;
+      if (!accessToken || !idToken) throw new UnauthorizedException('Login could not be completed.');
 
-      const user = await this.syncUserFromAccessToken(accessToken);
+      const user = await this.syncUserFromIdToken(idToken);
 
       return {
         user,
         accessToken,
+        refreshToken: result.AuthenticationResult?.RefreshToken,
       };
     } catch (error) {
       if (error instanceof UnauthorizedException) throw error;
@@ -156,6 +160,39 @@ export class AuthService {
       return { message: 'Email confirmed. You can log in now.' };
     } catch (error) {
       throw this.toAuthException(error, 'Confirmation code could not be verified.');
+    }
+  }
+
+  async forgotPassword(emailInput: string) {
+    const email = this.normalizeEmail(emailInput);
+    try {
+      await this.cognitoClient.send(
+        new ForgotPasswordCommand({ ClientId: this.getCognitoClientId(), Username: email }),
+      );
+    } catch (error) {
+      const name = (error as { name?: string }).name;
+      if (name !== 'UserNotFoundException') {
+        throw this.toAuthException(error, 'Password reset could not be started.');
+      }
+    }
+
+    return { message: 'If an account exists for that email, a reset code has been sent.' };
+  }
+
+  async resetPassword(emailInput: string, code: string, password: string) {
+    const email = this.normalizeEmail(emailInput);
+    try {
+      await this.cognitoClient.send(
+        new ConfirmForgotPasswordCommand({
+          ClientId: this.getCognitoClientId(),
+          Username: email,
+          ConfirmationCode: code.trim(),
+          Password: password,
+        }),
+      );
+      return { message: 'Password updated. You can log in now.' };
+    } catch (error) {
+      throw this.toAuthException(error, 'Password reset could not be completed.');
     }
   }
 
@@ -189,52 +226,105 @@ export class AuthService {
         );
       }
 
-      const email = this.normalizeEmail(idPayload.email);
-      const name =
-        idPayload.name?.trim() ||
-        [idPayload.given_name, idPayload.family_name].filter(Boolean).join(' ').trim() ||
-        email.split('@')[0];
       const username = idPayload['cognito:username'] ?? accessPayload['cognito:username'] ?? accessPayload.username;
-      const emailVerified = idPayload.email_verified === true || idPayload.email_verified === 'true';
-      const googleId = username?.startsWith('google_') ? cognitoSub : undefined;
-
-      const existingByGoogleId = googleId ? await this.prisma.user.findUnique({ where: { googleId } }) : null;
-      const existingBySub = await this.prisma.user.findUnique({ where: { id: cognitoSub } });
-      const existingByEmail = await this.prisma.user.findUnique({ where: { email } });
-      const existing = existingByGoogleId ?? existingBySub ?? existingByEmail;
-
-      const user = existing
-        ? await this.prisma.user.update({
-            where: { id: existing.id },
-            data: {
-              email: !existingByEmail || existingByEmail.id === existing.id ? email : existing.email,
-              name,
-              emailVerified,
-              avatarUrl: existing.avatarUrl ?? idPayload.picture,
-              googleId: !existingByGoogleId || existingByGoogleId.id === existing.id ? googleId : existing.googleId,
-            },
-            select: SAFE_USER_SELECT,
-          })
-        : await this.prisma.user.create({
-            data: {
-              id: cognitoSub,
-              email,
-              name,
-              emailVerified,
-              avatarUrl: idPayload.picture,
-              googleId,
-            },
-            select: SAFE_USER_SELECT,
-          });
+      const user = await this.syncUserFromClaims({
+        sub: cognitoSub,
+        email: idPayload.email,
+        name:
+          idPayload.name?.trim() ||
+          [idPayload.given_name, idPayload.family_name].filter(Boolean).join(' ').trim() ||
+          undefined,
+        picture: idPayload.picture,
+        emailVerified: idPayload.email_verified === true || idPayload.email_verified === 'true',
+        username,
+      });
 
       return {
         user,
         accessToken: dto.accessToken,
+        refreshToken: dto.refreshToken,
       };
     } catch (error) {
       if (error instanceof UnauthorizedException || error instanceof BadRequestException) throw error;
       console.error('[AuthService] Hosted session failed', error);
       throw new UnauthorizedException('Google sign-in could not be completed. Please try again.');
+    }
+  }
+
+  async exchangeHostedCode(dto: HostedCodeDto) {
+    const frontendUrl = this.configService.get<string>('FRONTEND_URL')?.replace(/\/$/, '');
+    const expectedRedirect = frontendUrl ? `${frontendUrl}/auth/callback` : undefined;
+    if (!expectedRedirect || dto.redirectUri !== expectedRedirect) {
+      throw new BadRequestException('The sign-in callback URL is not allowed.');
+    }
+
+    const hostedUiDomain = this.configService.get<string>('COGNITO_HOSTED_UI_DOMAIN');
+    if (!hostedUiDomain) throw new InternalServerErrorException('Google sign-in is not configured.');
+
+    const tokenUrl = new URL('/oauth2/token', /^https?:\/\//i.test(hostedUiDomain) ? hostedUiDomain : `https://${hostedUiDomain}`);
+    const body = new URLSearchParams({
+      grant_type: 'authorization_code',
+      client_id: this.getCognitoClientId(),
+      code: dto.code,
+      redirect_uri: dto.redirectUri,
+      code_verifier: dto.codeVerifier,
+    });
+
+    const response = await fetch(tokenUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body,
+    });
+    const data = (await response.json().catch(() => ({}))) as {
+      access_token?: string;
+      id_token?: string;
+      refresh_token?: string;
+      error?: string;
+      error_description?: string;
+    };
+
+    if (!response.ok || !data.access_token || !data.id_token) {
+      this.loggerAuthExchangeFailure(response.status, data.error);
+      const description = data.error_description || data.error || '';
+      if (/invalid_client|client_secret/i.test(description)) {
+        throw new InternalServerErrorException('Google sign-in is using the wrong Cognito app client.');
+      }
+      throw new UnauthorizedException('Google sign-in could not be completed. Please try again.');
+    }
+
+    return {
+      accessToken: data.access_token,
+      idToken: data.id_token,
+      refreshToken: data.refresh_token,
+    };
+  }
+
+  private loggerAuthExchangeFailure(status: number, error?: string) {
+    console.error('[AuthService] Hosted code exchange failed', { status, error: error ?? 'unknown' });
+  }
+
+  async refresh(refreshToken: string) {
+    try {
+      const result = await this.cognitoClient.send(
+        new InitiateAuthCommand({
+          ClientId: this.getCognitoClientId(),
+          AuthFlow: 'REFRESH_TOKEN_AUTH',
+          AuthParameters: { REFRESH_TOKEN: refreshToken },
+        }),
+      );
+
+      const accessToken = result.AuthenticationResult?.AccessToken;
+      const idToken = result.AuthenticationResult?.IdToken;
+      if (!accessToken || !idToken) throw new UnauthorizedException('Your session could not be renewed.');
+
+      return {
+        user: await this.syncUserFromIdToken(idToken),
+        accessToken,
+        refreshToken,
+      };
+    } catch (error) {
+      if (error instanceof UnauthorizedException) throw error;
+      throw this.toAuthException(error, 'Your session has expired. Please log in again.');
     }
   }
 
@@ -248,34 +338,81 @@ export class AuthService {
     return user;
   }
 
-  private async syncUserFromAccessToken(accessToken: string) {
-    const userInfo = await this.cognitoClient.send(new GetUserCommand({ AccessToken: accessToken }));
-    const attributes = new Map((userInfo.UserAttributes ?? []).map((item) => [item.Name, item.Value]));
-    const cognitoSub = attributes.get('sub');
-    const email = this.normalizeEmail(attributes.get('email'));
-    const name = attributes.get('name')?.trim() || (email ? email.split('@')[0] : 'Remnant user');
-    const emailVerified = attributes.get('email_verified') === 'true';
+  private async syncUserFromIdToken(idToken: string) {
+    const payload = (await this.getIdTokenVerifier().verify(idToken)) as {
+      sub?: string;
+      email?: string;
+      name?: string;
+      given_name?: string;
+      family_name?: string;
+      picture?: string;
+      email_verified?: boolean | string;
+      'cognito:username'?: string;
+    };
 
-    if (!cognitoSub || !email) {
-      throw new UnauthorizedException('Login could not be completed.');
+    if (!payload.sub || !payload.email) throw new UnauthorizedException('Login could not be completed.');
+
+    return this.syncUserFromClaims({
+      sub: payload.sub,
+      email: payload.email,
+      name:
+        payload.name?.trim() ||
+        [payload.given_name, payload.family_name].filter(Boolean).join(' ').trim() ||
+        undefined,
+      picture: payload.picture,
+      emailVerified: payload.email_verified === true || payload.email_verified === 'true',
+      username: payload['cognito:username'],
+    });
+  }
+
+  private async syncUserFromClaims(claims: {
+    sub: string;
+    email: string;
+    name?: string;
+    picture?: string;
+    emailVerified: boolean;
+    username?: string;
+  }) {
+    const email = this.normalizeEmail(claims.email);
+    const googleId = claims.username?.startsWith('google_') ? claims.sub : undefined;
+    const [existingBySub, existingByGoogleId, existingByEmail] = await Promise.all([
+      this.prisma.user.findUnique({ where: { id: claims.sub } }),
+      googleId ? this.prisma.user.findUnique({ where: { googleId } }) : Promise.resolve(null),
+      this.prisma.user.findUnique({ where: { email } }),
+    ]);
+    const existing = existingBySub ?? existingByGoogleId ?? existingByEmail;
+    const name = claims.name?.trim() || email.split('@')[0] || 'Remnant user';
+
+    if (existing?.bannedAt) throw new UnauthorizedException('This account is suspended.');
+
+    if (!existing) {
+      return this.prisma.user.create({
+        data: {
+          id: claims.sub,
+          email,
+          name,
+          emailVerified: claims.emailVerified,
+          avatarUrl: claims.picture,
+          googleId,
+        },
+        select: SAFE_USER_SELECT,
+      });
     }
 
-    await this.prisma.user.upsert({
-      where: { id: cognitoSub },
-      create: {
-        id: cognitoSub,
-        email,
-        name,
-        emailVerified,
+    return this.prisma.user.update({
+      where: { id: existing.id },
+      data: {
+        email: !existingByEmail || existingByEmail.id === existing.id ? email : existing.email,
+        name: claims.name?.trim() || existing.name,
+        emailVerified: existing.emailVerified || claims.emailVerified,
+        avatarUrl: existing.avatarUrl ?? claims.picture,
+        googleId:
+          googleId && (!existingByGoogleId || existingByGoogleId.id === existing.id)
+            ? googleId
+            : existing.googleId,
       },
-      update: {
-        email,
-        name,
-        emailVerified,
-      },
+      select: SAFE_USER_SELECT,
     });
-
-    return this.getProfile(cognitoSub);
   }
 
   private getCognitoClientId() {

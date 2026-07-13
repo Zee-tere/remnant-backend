@@ -3,6 +3,7 @@ import { TransactionsService } from './transactions.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { Request } from 'express';
 import { ConfigService } from '@nestjs/config';
+import { InitiateTransactionDto, MarkShippedDto } from './transactions.dto';
 
 @Controller('transactions')
 export class TransactionsController {
@@ -13,9 +14,9 @@ export class TransactionsController {
 
   @Post()
   @UseGuards(JwtAuthGuard)
-  async initiate(@Body('listingId') listingId: string, @Req() req: Request) {
+  async initiate(@Body() dto: InitiateTransactionDto, @Req() req: Request) {
     const user = req.user as { sub: string };
-    return this.transactionsService.initiateTransaction(user.sub, listingId);
+    return this.transactionsService.initiateTransaction(user.sub, dto.listingId);
   }
 
   @Get()
@@ -52,11 +53,11 @@ export class TransactionsController {
   @UseGuards(JwtAuthGuard)
   async markShipped(
     @Param('id') id: string,
-    @Body('trackingInfo') trackingInfo: string,
+    @Body() dto: MarkShippedDto,
     @Req() req: Request,
   ) {
     const user = req.user as { sub: string };
-    return this.transactionsService.markShipped(id, user.sub, trackingInfo);
+    return this.transactionsService.markShipped(id, user.sub, dto.trackingInfo);
   }
 
   @Post(':id/stub-fund')
