@@ -103,8 +103,10 @@ export class S3Service {
         : `https://${this.bucketName}.s3.${this.region}.amazonaws.com/${fileKey}`;
     } catch (error: unknown) {
       console.error('[S3Service] File upload failed', error);
-      const name = (error as { name?: string }).name;
-      if (name === 'AccessDenied' || name === 'NoSuchBucket' || name === 'PermanentRedirect') {
+      const maybeError = error as { name?: string; '$metadata'?: { httpStatusCode?: number } };
+      const name = maybeError.name;
+      const statusCode = maybeError.$metadata?.httpStatusCode;
+      if (name === 'AccessDenied' || name === 'NoSuchBucket' || name === 'PermanentRedirect' || statusCode === 403) {
         throw new ServiceUnavailableException('Image uploads are not ready yet. Please check the upload bucket settings.');
       }
       throw new InternalServerErrorException('File upload failed. Please try again.');
@@ -144,8 +146,8 @@ export class S3Service {
         errorName: maybeError.name ?? 'UnknownError',
         statusCode: maybeError.$metadata?.httpStatusCode ?? null,
         message:
-          maybeError.name === 'AccessDenied'
-            ? 'Lambda can see the bucket name but remnant-lambda-role does not have enough S3 permission.'
+          maybeError.name === 'AccessDenied' || maybeError.$metadata?.httpStatusCode === 403
+            ? 'Lambda can see the bucket name but remnant-lambda-role needs bucket-level S3 permission such as s3:ListBucket and s3:GetBucketLocation.'
             : 'Lambda cannot reach the upload bucket. Check AWS_S3_BUCKET, AWS_REGION, bucket existence, and role permissions.',
       };
     }
