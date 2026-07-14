@@ -10,6 +10,12 @@ async function bootstrap() {
   // Security headers for XSS, clickjacking, MIME sniffing, etc.
   app.use(helmet());
 
+  app.use('/auth', (_request, response, next) => {
+    response.setHeader('Cache-Control', 'no-store, max-age=0');
+    response.setHeader('Pragma', 'no-cache');
+    next();
+  });
+
   // Enable global validation.
   app.useGlobalPipes(
     new ValidationPipe({
@@ -19,7 +25,7 @@ async function bootstrap() {
     }),
   );
 
-  const isProduction = process.env.NODE_ENV === 'production';
+  const isProduction = process.env.NODE_ENV === 'production' || Boolean(process.env.AWS_LAMBDA_FUNCTION_NAME);
   const allowedOrigins = parseOriginList(
     process.env.FRONTEND_URL,
     process.env.ALLOWED_ORIGINS,

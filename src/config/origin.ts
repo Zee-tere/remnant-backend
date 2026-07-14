@@ -17,15 +17,6 @@ export function isAllowedOrigin(
     const url = new URL(origin);
     const hostname = url.hostname.toLowerCase();
 
-    if (
-      hostname === 'remnant.africa' ||
-      hostname.endsWith('.remnant.africa') ||
-      hostname === 'remnantmarket.co' ||
-      hostname.endsWith('.remnantmarket.co')
-    ) {
-      return true;
-    }
-
     if (options.allowPrivateLan) {
       return (
         hostname === 'localhost' ||

@@ -48,13 +48,15 @@ function assertSupabaseDatabase(config: Environment, errors: string[]) {
 
 export function validateEnvironment(config: Environment) {
   const nodeEnv = read(config, 'NODE_ENV') || 'development';
+  const isProduction = nodeEnv === 'production' || Boolean(read(config, 'AWS_LAMBDA_FUNCTION_NAME'));
   const errors: string[] = [];
 
-  if (nodeEnv === 'production') {
+  if (isProduction) {
     [
       'DATABASE_URL',
       'COGNITO_USER_POOL_ID',
       'COGNITO_CLIENT_ID',
+      'COGNITO_HOSTED_UI_DOMAIN',
       'FRONTEND_URL',
       'ALLOWED_ORIGINS',
       'AWS_REGION',

@@ -3,6 +3,7 @@ import {
   GoneException,
   InternalServerErrorException,
   NotFoundException,
+  ServiceUnavailableException,
   UnauthorizedException,
   BadRequestException,
 } from '@nestjs/common';
@@ -252,9 +253,7 @@ export class AuthService {
   }
 
   async exchangeHostedCode(dto: HostedCodeDto) {
-    const frontendUrl = this.configService.get<string>('FRONTEND_URL')?.replace(/\/$/, '');
-    const expectedRedirect = frontendUrl ? `${frontendUrl}/auth/callback` : undefined;
-    if (!expectedRedirect || dto.redirectUri !== expectedRedirect) {
+    if (!this.getAllowedAuthRedirects().has(dto.redirectUri)) {
       throw new BadRequestException('The sign-in callback URL is not allowed.');
     }
 
@@ -270,11 +269,19 @@ export class AuthService {
       code_verifier: dto.codeVerifier,
     });
 
-    const response = await fetch(tokenUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body,
-    });
+    let response: Response;
+    try {
+      response = await fetch(tokenUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body,
+      });
+    } catch (error) {
+      console.error('[AuthService] Cognito token endpoint unavailable', {
+        name: error instanceof Error ? error.name : 'unknown',
+      });
+      throw new ServiceUnavailableException('Google sign-in is temporarily unavailable. Please try again.');
+    }
     const data = (await response.json().catch(() => ({}))) as {
       access_token?: string;
       id_token?: string;
@@ -284,10 +291,16 @@ export class AuthService {
     };
 
     if (!response.ok || !data.access_token || !data.id_token) {
-      this.loggerAuthExchangeFailure(response.status, data.error);
+      this.loggerAuthExchangeFailure(response.status, data.error, data.error_description);
       const description = data.error_description || data.error || '';
       if (/invalid_client|client_secret/i.test(description)) {
         throw new InternalServerErrorException('Google sign-in is using the wrong Cognito app client.');
+      }
+      if (data.error === 'invalid_grant') {
+        throw new BadRequestException('This Google sign-in attempt expired. Please start again.');
+      }
+      if (/redirect|callback/i.test(description)) {
+        throw new BadRequestException('This sign-in callback is not registered with Cognito.');
       }
       throw new UnauthorizedException('Google sign-in could not be completed. Please try again.');
     }
@@ -299,8 +312,33 @@ export class AuthService {
     };
   }
 
-  private loggerAuthExchangeFailure(status: number, error?: string) {
-    console.error('[AuthService] Hosted code exchange failed', { status, error: error ?? 'unknown' });
+  private loggerAuthExchangeFailure(status: number, error?: string, description?: string) {
+    console.error('[AuthService] Hosted code exchange failed', {
+      status,
+      error: error ?? 'unknown',
+      description: description?.slice(0, 180),
+    });
+  }
+
+  private getAllowedAuthRedirects() {
+    const configuredOrigins = [
+      this.configService.get<string>('FRONTEND_URL'),
+      ...(this.configService.get<string>('ALLOWED_ORIGINS') ?? '').split(','),
+    ];
+    const redirects = new Set<string>();
+
+    for (const configuredOrigin of configuredOrigins) {
+      const value = configuredOrigin?.trim();
+      if (!value) continue;
+      try {
+        const url = new URL(value);
+        if (url.protocol === 'https:') redirects.add(`${url.origin}/auth/callback`);
+      } catch {
+        // Environment validation reports malformed production URLs at startup.
+      }
+    }
+
+    return redirects;
   }
 
   async refresh(refreshToken: string) {

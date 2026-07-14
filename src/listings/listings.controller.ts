@@ -2,6 +2,7 @@ import {
   Controller,
   Post,
   Get,
+  Header,
   Patch,
   Delete,
   Param,
@@ -34,6 +35,7 @@ export class ListingsController {
   }
 
   @Get()
+  @Header('Cache-Control', 'no-store, max-age=0')
   async findAll(
     @Query('category') category?: string,
     @Query('intentionTag') intentionTag?: string,
@@ -53,6 +55,7 @@ export class ListingsController {
   }
 
   @Get('search')
+  @Header('Cache-Control', 'no-store, max-age=0')
   async search(
     @Query('q') query: string,
     @Query('category') category?: string,
@@ -70,6 +73,7 @@ export class ListingsController {
   }
 
   @Get('saved')
+  @Header('Cache-Control', 'no-store, max-age=0')
   @UseGuards(JwtAuthGuard)
   async getSavedListings(@Req() req: Request) {
     const user = req.user as { sub: string };
@@ -77,6 +81,7 @@ export class ListingsController {
   }
 
   @Get('my')
+  @Header('Cache-Control', 'no-store, max-age=0')
   @UseGuards(JwtAuthGuard)
   async getMyListings(@Req() req: Request) {
     const user = req.user as { sub: string };
@@ -84,11 +89,13 @@ export class ListingsController {
   }
 
   @Get('slug/:slug')
+  @Header('Cache-Control', 'no-store, max-age=0')
   async findBySlug(@Param('slug') slug: string) {
     return this.listingsService.findBySlug(slug);
   }
 
   @Get(':id')
+  @Header('Cache-Control', 'no-store, max-age=0')
   async findOne(@Param('id') id: string) {
     return this.listingsService.findOne(id);
   }

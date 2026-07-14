@@ -120,45 +120,48 @@ export class S3Service {
   }
 
   async getUploadStatus() {
+    const includeDiagnostics = this.configService.get<string>('NODE_ENV') === 'development';
+
     if (!this.bucketName) {
-      return {
-        configured: false,
-        bucket: null,
-        region: this.region,
-        publicBaseUrlConfigured: Boolean(this.publicBaseUrl),
-        credentialMode: this.credentialMode,
-        bucketReachable: false,
-        message: 'AWS_S3_BUCKET is not set on Lambda.',
-      };
+      return includeDiagnostics
+        ? {
+            available: false,
+            configured: false,
+            bucket: null,
+            region: this.region,
+            publicBaseUrlConfigured: Boolean(this.publicBaseUrl),
+            credentialMode: this.credentialMode,
+            message: 'AWS_S3_BUCKET is not set.',
+          }
+        : { available: false, message: 'Image uploads are temporarily unavailable.' };
     }
 
     try {
       await this.s3Client.send(new HeadBucketCommand({ Bucket: this.bucketName }));
-      return {
-        configured: true,
-        bucket: this.bucketName,
-        region: this.region,
-        publicBaseUrlConfigured: Boolean(this.publicBaseUrl),
-        credentialMode: this.credentialMode,
-        bucketReachable: true,
-        message: 'Upload bucket is configured and reachable from Lambda.',
-      };
+      return includeDiagnostics
+        ? {
+            available: true,
+            configured: true,
+            bucket: this.bucketName,
+            region: this.region,
+            publicBaseUrlConfigured: Boolean(this.publicBaseUrl),
+            credentialMode: this.credentialMode,
+          }
+        : { available: true };
     } catch (error: unknown) {
       const maybeError = error as { name?: string; message?: string; '$metadata'?: { httpStatusCode?: number } };
-      return {
-        configured: true,
-        bucket: this.bucketName,
-        region: this.region,
-        publicBaseUrlConfigured: Boolean(this.publicBaseUrl),
-        credentialMode: this.credentialMode,
-        bucketReachable: false,
-        errorName: maybeError.name ?? 'UnknownError',
-        statusCode: maybeError.$metadata?.httpStatusCode ?? null,
-        message:
-          maybeError.name === 'AccessDenied' || maybeError.$metadata?.httpStatusCode === 403
-            ? 'Lambda can see the bucket name but remnant-lambda-role needs bucket-level S3 permission such as s3:ListBucket and s3:GetBucketLocation.'
-            : 'Lambda cannot reach the upload bucket. Check AWS_S3_BUCKET, AWS_REGION, bucket existence, and role permissions.',
-      };
+      return includeDiagnostics
+        ? {
+            available: false,
+            configured: true,
+            bucket: this.bucketName,
+            region: this.region,
+            publicBaseUrlConfigured: Boolean(this.publicBaseUrl),
+            credentialMode: this.credentialMode,
+            errorName: maybeError.name ?? 'UnknownError',
+            statusCode: maybeError.$metadata?.httpStatusCode ?? null,
+          }
+        : { available: false, message: 'Image uploads are temporarily unavailable.' };
     }
   }
 
@@ -206,8 +209,10 @@ export class S3Service {
     try {
       await this.s3Client.send(new DeleteObjectCommand({ Bucket: this.bucketName, Key: fileKey }));
     } catch (error: unknown) {
-      const msg = error instanceof Error ? error.message : 'Unknown error';
-      throw new InternalServerErrorException(`File deletion failed: ${msg}`);
+      console.error('[S3Service] File deletion failed', {
+        name: error instanceof Error ? error.name : 'unknown',
+      });
+      throw new InternalServerErrorException('File deletion failed. Please try again.');
     }
   }
 
@@ -219,8 +224,10 @@ export class S3Service {
       if ((error as { name: string }).name === 'NotFound') {
         return false;
       }
-      const msg = error instanceof Error ? error.message : 'Unknown error';
-      throw new InternalServerErrorException(`Error checking file existence: ${msg}`);
+      console.error('[S3Service] File existence check failed', {
+        name: error instanceof Error ? error.name : 'unknown',
+      });
+      throw new InternalServerErrorException('Could not verify the uploaded file. Please try again.');
     }
   }
 }
