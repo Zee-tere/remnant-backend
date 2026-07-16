@@ -30,6 +30,10 @@ export class GuestAccessService {
     );
   }
 
+  assertConfigured() {
+    this.getSecret();
+  }
+
   async getOrCreateGuestUser(name: string, emailAddress: string) {
     const email = emailAddress.trim().toLowerCase();
     const existing = await this.prisma.user.findUnique({ where: { email } });
@@ -111,7 +115,7 @@ export class GuestAccessService {
     const secret = this.configService.get<string>('GUEST_ACCESS_SECRET') ?? '';
     if (secret.length < 32) {
       throw new ServiceUnavailableException(
-        'Guest checkout and messaging are not configured yet.',
+        'Guest messaging is temporarily unavailable. Please try again shortly.',
       );
     }
     return secret;

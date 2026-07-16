@@ -1,10 +1,10 @@
-$ErrorActionPreference = "Stop"
-
 param(
   [string] $FunctionName = "remnant-api",
   [string] $Region = "us-east-1",
   [string] $EnvFile = ".\lambda-env.production.json"
 )
+
+$ErrorActionPreference = "Stop"
 
 $requiredKeys = @(
   "NODE_ENV",
@@ -16,6 +16,7 @@ $requiredKeys = @(
   "COGNITO_HOSTED_UI_DOMAIN",
   "AWS_REGION",
   "AWS_S3_BUCKET",
+  "GUEST_ACCESS_SECRET",
   "AWS_SES_REGION",
   "EMAIL_FROM",
   "OPENAI_API_KEY",
@@ -53,8 +54,12 @@ if ($missing.Count -gt 0) {
   throw "Missing required Lambda environment variables: $($missing -join ', ')"
 }
 
+if ($variables["GUEST_ACCESS_SECRET"].Length -lt 32) {
+  throw "GUEST_ACCESS_SECRET must contain at least 32 characters"
+}
+
 if ($variables["PAYSTACK_ENABLED"] -eq "true") {
-  foreach ($key in @("PAYSTACK_SECRET_KEY", "GUEST_ACCESS_SECRET")) {
+  foreach ($key in @("PAYSTACK_SECRET_KEY")) {
     if (-not $variables.ContainsKey($key) -or [string]::IsNullOrWhiteSpace($variables[$key])) {
       throw "$key is required when PAYSTACK_ENABLED=true"
     }

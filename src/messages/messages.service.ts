@@ -19,6 +19,7 @@ export class MessagesService {
   ) {}
 
   async startGuestConversation(dto: StartGuestConversationDto) {
+    this.guestAccessService.assertConfigured();
     const guest = await this.guestAccessService.getOrCreateGuestUser(
       dto.name,
       dto.email,
