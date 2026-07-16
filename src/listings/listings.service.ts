@@ -179,6 +179,71 @@ export class ListingsService {
     return Promise.all(listings.map((listing) => this.withReadableImages(listing)));
   }
 
+  async findSimilar(id: string, requestedLimit?: number) {
+    const source = await this.prisma.listing.findUnique({ where: { id } });
+    if (!source) throw new NotFoundException('Listing not found');
+
+    const limit = Math.min(Math.max(Number(requestedLimit) || 12, 1), 24);
+    let rankedIds: string[] = [];
+
+    try {
+      const ranked = await this.prisma.$queryRaw<Array<{ id: string; score: number | string }>>`
+        SELECT candidate.id,
+          (
+            CASE
+              WHEN source.city IS NOT NULL AND candidate.city = source.city THEN 1000
+              ELSE 0
+            END
+            + CASE
+                WHEN candidate."intentionTag" = source."intentionTag" THEN 100
+                ELSE 0
+              END
+            + CASE
+                WHEN source.embedding IS NOT NULL AND candidate.embedding IS NOT NULL
+                  THEN GREATEST(0, 1 - (candidate.embedding <=> source.embedding)) * 10
+                ELSE 0
+              END
+          )::double precision AS score
+        FROM "Listing" candidate
+        JOIN "Listing" source ON source.id = ${id}
+        WHERE candidate.status = 'ACTIVE'
+          AND candidate.id <> source.id
+        ORDER BY score DESC, candidate."createdAt" DESC
+        LIMIT ${limit}
+      `;
+      rankedIds = ranked.map((item) => item.id);
+    } catch (error) {
+      this.logger.warn(`Vector ranking unavailable for listing ${id}; using text fallback.`);
+      const candidates = await this.prisma.listing.findMany({
+        where: { status: 'ACTIVE', id: { not: id } },
+        orderBy: { createdAt: 'desc' },
+        take: 100,
+      });
+      rankedIds = candidates
+        .map((candidate) => ({
+          id: candidate.id,
+          score:
+            (source.city && candidate.city === source.city ? 1000 : 0) +
+            (candidate.intentionTag === source.intentionTag ? 100 : 0) +
+            this.descriptionSimilarity(source, candidate) * 10,
+        }))
+        .sort((a, b) => b.score - a.score)
+        .slice(0, limit)
+        .map((candidate) => candidate.id);
+    }
+
+    if (rankedIds.length === 0) return [];
+    const listings = await this.prisma.listing.findMany({
+      where: { id: { in: rankedIds }, status: 'ACTIVE' },
+      include: {
+        user: { select: { id: true, name: true, avatarUrl: true, city: true, trustTier: true } },
+      },
+    });
+    const byId = new Map(listings.map((listing) => [listing.id, listing]));
+    const ordered = rankedIds.map((listingId) => byId.get(listingId)).filter((listing): listing is NonNullable<typeof listing> => Boolean(listing));
+    return Promise.all(ordered.map((listing) => this.withReadableImages(listing)));
+  }
+
   async update(id: string, userId: string, dto: UpdateListingDto) {
     this.assertManagedImages(dto.images);
     const listing = await this.prisma.listing.findUnique({ where: { id } });
@@ -312,6 +377,24 @@ export class ListingsService {
       ...listing,
       images: await this.s3Service.getReadableUrls(listing.images ?? []),
     };
+  }
+
+  private descriptionSimilarity(
+    first: { title: string; description: string; pairingKeyword: string | null },
+    second: { title: string; description: string; pairingKeyword: string | null },
+  ) {
+    const tokens = (value: string) =>
+      new Set(
+        value
+          .toLowerCase()
+          .split(/[^a-z0-9]+/)
+          .filter((token) => token.length > 2),
+      );
+    const firstTokens = tokens(`${first.title} ${first.description} ${first.pairingKeyword ?? ''}`);
+    const secondTokens = tokens(`${second.title} ${second.description} ${second.pairingKeyword ?? ''}`);
+    if (firstTokens.size === 0 || secondTokens.size === 0) return 0;
+    const overlap = [...firstTokens].filter((token) => secondTokens.has(token)).length;
+    return overlap / Math.max(firstTokens.size, secondTokens.size);
   }
 
   private assertManagedImages(images?: string[]) {

@@ -94,6 +94,12 @@ export class ListingsController {
     return this.listingsService.findBySlug(slug);
   }
 
+  @Get(':id/similar')
+  @Header('Cache-Control', 'public, max-age=120, stale-while-revalidate=300')
+  async findSimilar(@Param('id') id: string, @Query('limit') limit?: string) {
+    return this.listingsService.findSimilar(id, limit ? parseInt(limit, 10) : undefined);
+  }
+
   @Get(':id')
   @Header('Cache-Control', 'no-store, max-age=0')
   async findOne(@Param('id') id: string) {

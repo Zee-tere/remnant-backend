@@ -42,16 +42,26 @@ export class TransactionsService {
     return this.configService.get<string>('ESCROW_ENABLED', 'false') === 'true';
   }
 
+  private get platformPaymentsEnabled(): boolean {
+    return (
+      this.configService.get<string>('PLATFORM_PAYMENTS_ENABLED', 'false') ===
+      'true'
+    );
+  }
+
   getPaymentConfig() {
     const paymentsEnabled =
-      this.paystackService.isEnabled() || this.escrowEnabled;
+      this.platformPaymentsEnabled &&
+      (this.paystackService.isEnabled() || this.escrowEnabled);
     return {
       paymentsEnabled,
-      provider: this.paystackService.isEnabled()
-        ? 'paystack'
-        : this.escrowEnabled
-          ? 'escrow'
-          : null,
+      provider: paymentsEnabled
+        ? this.paystackService.isEnabled()
+          ? 'paystack'
+          : this.escrowEnabled
+            ? 'escrow'
+            : null
+        : null,
       guestCheckoutEnabled:
         paymentsEnabled && this.guestAccessService.isConfigured(),
       currency: 'NGN',
@@ -92,6 +102,12 @@ export class TransactionsService {
     buyer: { id: string; email: string; name: string },
     listingId: string,
   ) {
+    if (!this.platformPaymentsEnabled) {
+      throw new ServiceUnavailableException(
+        'Platform payments are paused. Contact the seller directly through messages.',
+      );
+    }
+
     const listing = await this.prisma.listing.findUnique({
       where: { id: listingId },
       include: { user: true },

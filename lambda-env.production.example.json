@@ -22,6 +22,7 @@
     "ESCROW_ENABLED": "false",
     "ESCROW_ALLOW_STUB": "false",
     "PAYSTACK_ENABLED": "false",
+    "PLATFORM_PAYMENTS_ENABLED": "false",
     "PAYSTACK_SECRET_KEY": "",
     "PAYSTACK_CALLBACK_URL": "https://remnantmarket.co/payment/callback",
     "GUEST_ACCESS_SECRET": "",
