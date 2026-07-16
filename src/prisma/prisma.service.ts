@@ -12,6 +12,7 @@ export function prepareDatabaseUrl(value = process.env.DATABASE_URL) {
     if (!usesTransactionPooler) return value;
 
     url.searchParams.set('pgbouncer', 'true');
+    url.searchParams.set('statement_cache_size', '0');
     if (!url.searchParams.has('connection_limit')) url.searchParams.set('connection_limit', '1');
     return url.toString();
   } catch {

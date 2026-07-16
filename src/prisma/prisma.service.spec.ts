@@ -8,6 +8,7 @@ describe('prepareDatabaseUrl', () => {
     const url = new URL(result);
 
     expect(url.searchParams.get('pgbouncer')).toBe('true');
+    expect(url.searchParams.get('statement_cache_size')).toBe('0');
     expect(url.searchParams.get('connection_limit')).toBe('1');
   });
 
