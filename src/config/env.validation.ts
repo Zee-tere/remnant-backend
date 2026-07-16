@@ -7,12 +7,20 @@ function read(config: Environment, key: string) {
 
 function assertPresent(config: Environment, key: string, errors: string[]) {
   const value = read(config, key);
-  if (!value || value.startsWith('REPLACE_WITH_') || value.startsWith('your_')) {
+  if (
+    !value ||
+    value.startsWith('REPLACE_WITH_') ||
+    value.startsWith('your_')
+  ) {
     errors.push(`${key} is required`);
   }
 }
 
-function assertProductionUrl(config: Environment, key: string, errors: string[]) {
+function assertProductionUrl(
+  config: Environment,
+  key: string,
+  errors: string[],
+) {
   const value = read(config, key);
   if (!value) {
     errors.push(`${key} is required`);
@@ -38,17 +46,23 @@ function assertSupabaseDatabase(config: Environment, errors: string[]) {
   }
 
   if (/localhost|127\.0\.0\.1|0\.0\.0\.0/i.test(value)) {
-    errors.push('DATABASE_URL must point to the Supabase PostgreSQL pooler in production');
+    errors.push(
+      'DATABASE_URL must point to the Supabase PostgreSQL pooler in production',
+    );
   }
 
   if (!/6543|pooler|supabase/i.test(value)) {
-    errors.push('DATABASE_URL should use the Supabase pooler connection string for Lambda runtime');
+    errors.push(
+      'DATABASE_URL should use the Supabase pooler connection string for Lambda runtime',
+    );
   }
 }
 
 export function validateEnvironment(config: Environment) {
   const nodeEnv = read(config, 'NODE_ENV') || 'development';
-  const isProduction = nodeEnv === 'production' || Boolean(read(config, 'AWS_LAMBDA_FUNCTION_NAME'));
+  const isProduction =
+    nodeEnv === 'production' ||
+    Boolean(read(config, 'AWS_LAMBDA_FUNCTION_NAME'));
   const errors: string[] = [];
 
   if (isProduction) {
@@ -67,18 +81,29 @@ export function validateEnvironment(config: Environment) {
     assertSupabaseDatabase(config, errors);
     assertProductionUrl(config, 'FRONTEND_URL', errors);
     if (read(config, 'ESCROW_ENABLED') === 'true') {
-      ['ESCROW_API_EMAIL', 'ESCROW_API_KEY', 'ESCROW_WEBHOOK_SECRET'].forEach((key) =>
-        assertPresent(config, key, errors),
+      ['ESCROW_API_EMAIL', 'ESCROW_API_KEY', 'ESCROW_WEBHOOK_SECRET'].forEach(
+        (key) => assertPresent(config, key, errors),
       );
     }
 
     if (read(config, 'ESCROW_ALLOW_STUB') === 'true') {
       errors.push('ESCROW_ALLOW_STUB must be false in production');
     }
+
+    if (read(config, 'PAYSTACK_ENABLED') === 'true') {
+      ['PAYSTACK_SECRET_KEY', 'GUEST_ACCESS_SECRET'].forEach((key) =>
+        assertPresent(config, key, errors),
+      );
+      const callbackUrl = read(config, 'PAYSTACK_CALLBACK_URL');
+      if (callbackUrl)
+        assertProductionUrl(config, 'PAYSTACK_CALLBACK_URL', errors);
+    }
   }
 
   if (errors.length) {
-    throw new Error(`Invalid environment configuration:\n- ${errors.join('\n- ')}`);
+    throw new Error(
+      `Invalid environment configuration:\n- ${errors.join('\n- ')}`,
+    );
   }
 
   return config;

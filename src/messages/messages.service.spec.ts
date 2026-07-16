@@ -3,6 +3,7 @@ import { MessagesService } from './messages.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { S3Service } from '../utils/s3.service';
+import { GuestAccessService } from '../auth/guest-access.service';
 
 describe('MessagesService', () => {
   let service: MessagesService;
@@ -14,6 +15,7 @@ describe('MessagesService', () => {
         { provide: PrismaService, useValue: {} },
         { provide: NotificationsService, useValue: { createNotification: jest.fn() } },
         { provide: S3Service, useValue: { getReadableUrls: jest.fn() } },
+        { provide: GuestAccessService, useValue: {} },
       ],
     }).compile();
 

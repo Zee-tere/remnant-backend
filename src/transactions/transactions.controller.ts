@@ -1,22 +1,102 @@
-import { Controller, Get, Post, Patch, Param, Body, Req, UseGuards, Headers, ForbiddenException } from '@nestjs/common';
-import { TransactionsService } from './transactions.service';
-import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
-import { Request } from 'express';
+import {
+  Body,
+  Controller,
+  ForbiddenException,
+  Get,
+  Headers,
+  Param,
+  Patch,
+  Post,
+  RawBodyRequest,
+  Req,
+  UseGuards,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { InitiateTransactionDto, MarkShippedDto } from './transactions.dto';
+import { Throttle } from '@nestjs/throttler';
+import { Request } from 'express';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import {
+  InitiateGuestTransactionDto,
+  InitiateTransactionDto,
+  MarkShippedDto,
+} from './transactions.dto';
+import { PaystackService } from './paystack.service';
+import { TransactionsService } from './transactions.service';
 
 @Controller('transactions')
 export class TransactionsController {
   constructor(
     private readonly transactionsService: TransactionsService,
     private readonly configService: ConfigService,
+    private readonly paystackService: PaystackService,
   ) {}
+
+  @Get('config')
+  getPaymentConfig() {
+    return this.transactionsService.getPaymentConfig();
+  }
+
+  @Post('guest')
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
+  initiateGuest(@Body() dto: InitiateGuestTransactionDto) {
+    return this.transactionsService.initiateGuestTransaction(dto);
+  }
+
+  @Get('guest/:id')
+  getGuestTransaction(
+    @Param('id') id: string,
+    @Headers('x-guest-token') token?: string,
+  ) {
+    return this.transactionsService.getGuestTransaction(id, token);
+  }
+
+  @Patch('guest/:id/confirm')
+  @Throttle({ default: { limit: 10, ttl: 60000 } })
+  confirmGuestReceipt(
+    @Param('id') id: string,
+    @Headers('x-guest-token') token?: string,
+  ) {
+    return this.transactionsService.confirmGuestReceipt(id, token);
+  }
+
+  @Post('guest/:id/dispute')
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
+  disputeGuestTransaction(
+    @Param('id') id: string,
+    @Headers('x-guest-token') token?: string,
+  ) {
+    return this.transactionsService.disputeGuestTransaction(id, token);
+  }
+
+  @Get('paystack/verify/:reference')
+  @Throttle({ default: { limit: 10, ttl: 60000 } })
+  verifyPaystack(@Param('reference') reference: string) {
+    return this.transactionsService.verifyPaystackTransaction(reference);
+  }
+
+  @Post('paystack/webhook')
+  async paystackWebhook(
+    @Req() req: RawBodyRequest<Request>,
+    @Body() body: Record<string, unknown>,
+    @Headers('x-paystack-signature') signature?: string,
+  ) {
+    if (
+      !req.rawBody ||
+      !this.paystackService.verifyWebhookSignature(req.rawBody, signature)
+    ) {
+      throw new ForbiddenException('Invalid Paystack webhook signature');
+    }
+    return this.transactionsService.handlePaystackWebhook(body);
+  }
 
   @Post()
   @UseGuards(JwtAuthGuard)
   async initiate(@Body() dto: InitiateTransactionDto, @Req() req: Request) {
     const user = req.user as { sub: string };
-    return this.transactionsService.initiateTransaction(user.sub, dto.listingId);
+    return this.transactionsService.initiateTransaction(
+      user.sub,
+      dto.listingId,
+    );
   }
 
   @Get()
@@ -35,7 +115,9 @@ export class TransactionsController {
       return { received: true, note: 'escrow disabled' };
     }
 
-    const expectedSecret = this.configService.get<string>('ESCROW_WEBHOOK_SECRET');
+    const expectedSecret = this.configService.get<string>(
+      'ESCROW_WEBHOOK_SECRET',
+    );
     if (expectedSecret && webhookSecret !== expectedSecret) {
       throw new ForbiddenException('Invalid webhook secret');
     }

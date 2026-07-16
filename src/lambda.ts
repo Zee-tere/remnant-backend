@@ -9,7 +9,10 @@ import { isAllowedOrigin, parseOriginList } from './config/origin';
 let server: Handler;
 
 async function bootstrap(): Promise<Handler> {
-  const app = await NestFactory.create(AppModule, { logger: ['error', 'warn', 'log'] });
+  const app = await NestFactory.create(AppModule, {
+    logger: ['error', 'warn', 'log'],
+    rawBody: true,
+  });
 
   app.use(helmet());
   app.use('/auth', (_request, response, next) => {
@@ -25,7 +28,9 @@ async function bootstrap(): Promise<Handler> {
     }),
   );
 
-  const isProduction = process.env.NODE_ENV === 'production' || Boolean(process.env.AWS_LAMBDA_FUNCTION_NAME);
+  const isProduction =
+    process.env.NODE_ENV === 'production' ||
+    Boolean(process.env.AWS_LAMBDA_FUNCTION_NAME);
   const allowedOrigins = parseOriginList(
     process.env.FRONTEND_URL,
     process.env.ALLOWED_ORIGINS,
@@ -34,14 +39,23 @@ async function bootstrap(): Promise<Handler> {
 
   app.enableCors({
     origin: (origin, callback) => {
-      if (isAllowedOrigin(origin, allowedOrigins, { allowPrivateLan: !isProduction })) {
+      if (
+        isAllowedOrigin(origin, allowedOrigins, {
+          allowPrivateLan: !isProduction,
+        })
+      ) {
         callback(null, true);
       } else {
         callback(new Error(`CORS: origin ${origin} not allowed`));
       }
     },
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
+    allowedHeaders: [
+      'Content-Type',
+      'Authorization',
+      'X-Guest-Token',
+      'X-Paystack-Signature',
+    ],
     credentials: true,
   });
 

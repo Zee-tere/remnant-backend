@@ -16,13 +16,13 @@ $requiredKeys = @(
   "COGNITO_HOSTED_UI_DOMAIN",
   "AWS_REGION",
   "AWS_S3_BUCKET",
-  "AWS_S3_PUBLIC_BASE_URL",
   "AWS_SES_REGION",
   "EMAIL_FROM",
   "OPENAI_API_KEY",
   "SUPABASE_URL",
   "SUPABASE_JWT_SECRET",
-  "ESCROW_ENABLED"
+  "ESCROW_ENABLED",
+  "PAYSTACK_ENABLED"
 )
 
 if (-not (Test-Path -LiteralPath $EnvFile)) {
@@ -53,6 +53,14 @@ if ($missing.Count -gt 0) {
   throw "Missing required Lambda environment variables: $($missing -join ', ')"
 }
 
+if ($variables["PAYSTACK_ENABLED"] -eq "true") {
+  foreach ($key in @("PAYSTACK_SECRET_KEY", "GUEST_ACCESS_SECRET")) {
+    if (-not $variables.ContainsKey($key) -or [string]::IsNullOrWhiteSpace($variables[$key])) {
+      throw "$key is required when PAYSTACK_ENABLED=true"
+    }
+  }
+}
+
 $placeholders = $variables.GetEnumerator() |
   Where-Object { $_.Value -like "REPLACE_WITH_*" -or $_.Value -like "your_*" } |
   ForEach-Object { $_.Key }
@@ -81,4 +89,4 @@ aws lambda wait function-updated `
 aws lambda get-function-configuration `
   --region $Region `
   --function-name $FunctionName `
-  --query "{State:State,Status:LastUpdateStatus,Reason:LastUpdateStatusReason,Environment:Environment.Variables}"
+  --query "{State:State,Status:LastUpdateStatus,Reason:LastUpdateStatusReason}"

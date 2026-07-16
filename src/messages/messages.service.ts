@@ -1,7 +1,13 @@
-import { Injectable, NotFoundException, ForbiddenException } from '@nestjs/common';
+import {
+  Injectable,
+  NotFoundException,
+  ForbiddenException,
+} from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { S3Service } from '../utils/s3.service';
+import { GuestAccessService } from '../auth/guest-access.service';
+import { StartGuestConversationDto } from './messages.dto';
 
 @Injectable()
 export class MessagesService {
@@ -9,7 +15,62 @@ export class MessagesService {
     private prisma: PrismaService,
     private notificationsService: NotificationsService,
     private s3Service: S3Service,
+    private guestAccessService: GuestAccessService,
   ) {}
+
+  async startGuestConversation(dto: StartGuestConversationDto) {
+    const guest = await this.guestAccessService.getOrCreateGuestUser(
+      dto.name,
+      dto.email,
+    );
+    const conversation = await this.startConversation(guest.id, dto.listingId);
+    await this.createMessage(conversation.id, guest.id, dto.message);
+    return {
+      conversation,
+      guestToken: this.guestAccessService.issueToken(
+        'conversation',
+        conversation.id,
+        guest,
+      ),
+    };
+  }
+
+  async getGuestConversation(conversationId: string, token?: string) {
+    const guest = this.guestAccessService.verifyToken(
+      token,
+      'conversation',
+      conversationId,
+    );
+    const conversation = await this.getConversation(
+      conversationId,
+      guest.userId,
+    );
+    const messages = await this.getMessages(conversationId, guest.userId);
+    return { conversation, messages };
+  }
+
+  async createGuestMessage(
+    conversationId: string,
+    token: string | undefined,
+    content: string,
+    type: 'TEXT' | 'IMAGE' | 'OFFER' | 'SYSTEM' = 'TEXT',
+  ) {
+    const guest = this.guestAccessService.verifyToken(
+      token,
+      'conversation',
+      conversationId,
+    );
+    return this.createMessage(conversationId, guest.userId, content, type);
+  }
+
+  async markGuestConversationRead(conversationId: string, token?: string) {
+    const guest = this.guestAccessService.verifyToken(
+      token,
+      'conversation',
+      conversationId,
+    );
+    return this.markAsRead(conversationId, guest.userId);
+  }
 
   async getConversations(userId: string) {
     const conversations = await this.prisma.conversation.findMany({
@@ -17,13 +78,21 @@ export class MessagesService {
         OR: [{ buyerId: userId }, { sellerId: userId }],
       },
       include: {
-        listing: { select: { id: true, title: true, slug: true, images: true } },
+        listing: {
+          select: { id: true, title: true, slug: true, images: true },
+        },
         buyer: { select: { id: true, name: true, avatarUrl: true } },
         seller: { select: { id: true, name: true, avatarUrl: true } },
         messages: {
           orderBy: { createdAt: 'desc' },
           take: 1,
-          select: { id: true, content: true, senderId: true, createdAt: true, readAt: true },
+          select: {
+            id: true,
+            content: true,
+            senderId: true,
+            createdAt: true,
+            readAt: true,
+          },
         },
       },
       orderBy: { createdAt: 'desc' },
@@ -33,7 +102,9 @@ export class MessagesService {
         ...conversation,
         listing: {
           ...conversation.listing,
-          images: await this.s3Service.getReadableUrls(conversation.listing.images),
+          images: await this.s3Service.getReadableUrls(
+            conversation.listing.images,
+          ),
         },
       })),
     );
@@ -44,11 +115,15 @@ export class MessagesService {
       where: { id: listingId },
       include: { user: { select: { email: true } } },
     });
-    if (!listing || listing.status !== 'ACTIVE') throw new NotFoundException('Active listing not found');
+    if (!listing || listing.status !== 'ACTIVE')
+      throw new NotFoundException('Active listing not found');
     if (listing.user.email.endsWith('@guest.remnant.local')) {
-      throw new ForbiddenException('This guest seller has not joined Remnant yet, so messaging is not available.');
+      throw new ForbiddenException(
+        'This guest seller has not joined Remnant yet, so messaging is not available.',
+      );
     }
-    if (listing.userId === buyerId) throw new ForbiddenException('Cannot message yourself');
+    if (listing.userId === buyerId)
+      throw new ForbiddenException('Cannot message yourself');
 
     const conversation = await this.prisma.conversation.upsert({
       where: {
@@ -61,7 +136,9 @@ export class MessagesService {
       create: { listingId, buyerId, sellerId: listing.userId },
       update: {},
       include: {
-        listing: { select: { id: true, title: true, slug: true, images: true } },
+        listing: {
+          select: { id: true, title: true, slug: true, images: true },
+        },
         buyer: { select: { id: true, name: true, avatarUrl: true } },
         seller: { select: { id: true, name: true, avatarUrl: true } },
       },
@@ -70,7 +147,9 @@ export class MessagesService {
       ...conversation,
       listing: {
         ...conversation.listing,
-        images: await this.s3Service.getReadableUrls(conversation.listing.images),
+        images: await this.s3Service.getReadableUrls(
+          conversation.listing.images,
+        ),
       },
     };
   }
@@ -90,12 +169,46 @@ export class MessagesService {
     });
   }
 
-  async createMessage(conversationId: string, senderId: string, content: string, type: 'TEXT' | 'IMAGE' | 'OFFER' | 'SYSTEM' = 'TEXT') {
+  private async getConversation(conversationId: string, userId: string) {
+    const conversation = await this.prisma.conversation.findUnique({
+      where: { id: conversationId },
+      include: {
+        listing: {
+          select: { id: true, title: true, slug: true, images: true },
+        },
+        buyer: { select: { id: true, name: true, avatarUrl: true } },
+        seller: { select: { id: true, name: true, avatarUrl: true } },
+      },
+    });
+    if (!conversation) throw new NotFoundException('Conversation not found');
+    if (conversation.buyerId !== userId && conversation.sellerId !== userId) {
+      throw new ForbiddenException('Not a member of this conversation');
+    }
+    return {
+      ...conversation,
+      listing: {
+        ...conversation.listing,
+        images: await this.s3Service.getReadableUrls(
+          conversation.listing.images,
+        ),
+      },
+    };
+  }
+
+  async createMessage(
+    conversationId: string,
+    senderId: string,
+    content: string,
+    type: 'TEXT' | 'IMAGE' | 'OFFER' | 'SYSTEM' = 'TEXT',
+  ) {
     const conversation = await this.prisma.conversation.findUnique({
       where: { id: conversationId },
     });
     if (!conversation) throw new NotFoundException('Conversation not found');
-    if (conversation.buyerId !== senderId && conversation.sellerId !== senderId) {
+    if (
+      conversation.buyerId !== senderId &&
+      conversation.sellerId !== senderId
+    ) {
       throw new ForbiddenException('Not a member of this conversation');
     }
 
@@ -108,19 +221,26 @@ export class MessagesService {
       },
     });
 
-    const recipientId = conversation.buyerId === senderId ? conversation.sellerId : conversation.buyerId;
-    await this.notificationsService.createNotification(
-      recipientId,
-      'MESSAGE_RECEIVED',
-      'New message',
-      content.length > 90 ? `${content.slice(0, 87)}...` : content,
-      '/user/dashboard?section=messages',
-    );
+    const recipientId =
+      conversation.buyerId === senderId
+        ? conversation.sellerId
+        : conversation.buyerId;
+    void this.notificationsService
+      .createNotification(
+        recipientId,
+        'MESSAGE_RECEIVED',
+        'New message',
+        content.length > 90 ? `${content.slice(0, 87)}...` : content,
+        '/user/dashboard?section=messages',
+      )
+      .catch(() => undefined);
     return message;
   }
 
   async markAsRead(conversationId: string, userId: string) {
-    const conversation = await this.prisma.conversation.findUnique({ where: { id: conversationId } });
+    const conversation = await this.prisma.conversation.findUnique({
+      where: { id: conversationId },
+    });
     if (!conversation) throw new NotFoundException('Conversation not found');
     if (conversation.buyerId !== userId && conversation.sellerId !== userId) {
       throw new ForbiddenException('Not a member of this conversation');

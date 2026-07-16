@@ -1,21 +1,64 @@
 import {
+  Body,
   Controller,
   Get,
-  Post,
-  Patch,
+  Headers,
   Param,
-  Body,
+  Patch,
+  Post,
   Req,
   UseGuards,
 } from '@nestjs/common';
-import { MessagesService } from './messages.service';
-import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { Throttle } from '@nestjs/throttler';
 import { Request } from 'express';
-import { CreateMessageDto, StartConversationDto } from './messages.dto';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import {
+  CreateMessageDto,
+  StartConversationDto,
+  StartGuestConversationDto,
+} from './messages.dto';
+import { MessagesService } from './messages.service';
 
 @Controller('conversations')
 export class MessagesController {
   constructor(private readonly messagesService: MessagesService) {}
+
+  @Post('guest')
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
+  startGuestConversation(@Body() dto: StartGuestConversationDto) {
+    return this.messagesService.startGuestConversation(dto);
+  }
+
+  @Get('guest/:id')
+  getGuestConversation(
+    @Param('id') id: string,
+    @Headers('x-guest-token') token?: string,
+  ) {
+    return this.messagesService.getGuestConversation(id, token);
+  }
+
+  @Post('guest/:id/messages')
+  @Throttle({ default: { limit: 12, ttl: 60000 } })
+  createGuestMessage(
+    @Param('id') id: string,
+    @Body() dto: CreateMessageDto,
+    @Headers('x-guest-token') token?: string,
+  ) {
+    return this.messagesService.createGuestMessage(
+      id,
+      token,
+      dto.content,
+      dto.type,
+    );
+  }
+
+  @Patch('guest/:id/read')
+  markGuestConversationRead(
+    @Param('id') id: string,
+    @Headers('x-guest-token') token?: string,
+  ) {
+    return this.messagesService.markGuestConversationRead(id, token);
+  }
 
   @Get()
   @UseGuards(JwtAuthGuard)
@@ -49,7 +92,12 @@ export class MessagesController {
     @Req() req: Request,
   ) {
     const user = req.user as { sub: string };
-    return this.messagesService.createMessage(id, user.sub, dto.content, dto.type);
+    return this.messagesService.createMessage(
+      id,
+      user.sub,
+      dto.content,
+      dto.type,
+    );
   }
 
   @Patch(':id/read')
