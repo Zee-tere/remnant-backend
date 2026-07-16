@@ -75,13 +75,8 @@ export function validateEnvironment(config: Environment) {
       'ALLOWED_ORIGINS',
       'AWS_REGION',
       'AWS_S3_BUCKET',
-      'GUEST_ACCESS_SECRET',
       'ESCROW_ENABLED',
     ].forEach((key) => assertPresent(config, key, errors));
-
-    if (read(config, 'GUEST_ACCESS_SECRET').length < 32) {
-      errors.push('GUEST_ACCESS_SECRET must contain at least 32 characters');
-    }
 
     assertSupabaseDatabase(config, errors);
     assertProductionUrl(config, 'FRONTEND_URL', errors);
