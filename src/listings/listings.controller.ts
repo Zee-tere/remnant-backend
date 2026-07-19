@@ -3,6 +3,7 @@ import {
   Post,
   Get,
   Header,
+  Headers,
   Patch,
   Delete,
   Param,
@@ -72,6 +73,12 @@ export class ListingsController {
     });
   }
 
+  @Get('sitemap')
+  @Header('Cache-Control', 'public, max-age=1800, stale-while-revalidate=1800')
+  async getSitemapEntries() {
+    return this.listingsService.getSitemapEntries();
+  }
+
   @Get('saved')
   @Header('Cache-Control', 'no-store, max-age=0')
   @UseGuards(JwtAuthGuard)
@@ -90,8 +97,8 @@ export class ListingsController {
 
   @Get('slug/:slug')
   @Header('Cache-Control', 'no-store, max-age=0')
-  async findBySlug(@Param('slug') slug: string) {
-    return this.listingsService.findBySlug(slug);
+  async findBySlug(@Param('slug') slug: string, @Query('trackView') trackView?: string) {
+    return this.listingsService.findBySlug(slug, trackView !== 'false');
   }
 
   @Get(':id/similar')
@@ -102,8 +109,14 @@ export class ListingsController {
 
   @Get(':id')
   @Header('Cache-Control', 'no-store, max-age=0')
-  async findOne(@Param('id') id: string) {
-    return this.listingsService.findOne(id);
+  async findOne(@Param('id') id: string, @Query('trackView') trackView?: string) {
+    return this.listingsService.findOne(id, trackView !== 'false');
+  }
+
+  @Post(':id/view')
+  @Throttle({ default: { limit: 30, ttl: 60000 } })
+  async trackView(@Param('id') id: string, @Headers('user-agent') userAgent?: string) {
+    return this.listingsService.trackView(id, userAgent || '');
   }
 
   @Patch(':id')

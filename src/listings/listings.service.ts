@@ -57,6 +57,7 @@ export class ListingsService {
     });
 
     this.scheduleListingMatching(listing.id, 'listing_created');
+    void this.notifyIndexNow(listing.slug);
     return this.withReadableImages(listing);
   }
 
@@ -136,7 +137,27 @@ export class ListingsService {
     };
   }
 
-  async findOne(id: string) {
+  async getSitemapEntries() {
+    const listings = await this.prisma.listing.findMany({
+      where: { status: 'ACTIVE' },
+      orderBy: { updatedAt: 'desc' },
+      take: 50_000,
+      select: {
+        id: true,
+        slug: true,
+        images: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+    });
+
+    return listings.map(({ images, ...listing }) => ({
+      ...listing,
+      imageCount: images.length,
+    }));
+  }
+
+  async findOne(id: string, trackView = true) {
     const listing = await this.prisma.listing.findUnique({
       where: { id },
       include: {
@@ -145,16 +166,17 @@ export class ListingsService {
     });
     if (!listing) throw new NotFoundException(`Listing not found`);
 
-    // Increment view count
-    await this.prisma.listing.update({
-      where: { id },
-      data: { viewCount: { increment: 1 } },
-    });
+    if (trackView) {
+      await this.prisma.listing.update({
+        where: { id },
+        data: { viewCount: { increment: 1 } },
+      });
+    }
 
     return this.withReadableImages(listing);
   }
 
-  async findBySlug(slug: string) {
+  async findBySlug(slug: string, trackView = true) {
     const listing = await this.prisma.listing.findUnique({
       where: { slug },
       include: {
@@ -163,12 +185,27 @@ export class ListingsService {
     });
     if (!listing) throw new NotFoundException(`Listing not found`);
 
-    await this.prisma.listing.update({
-      where: { id: listing.id },
-      data: { viewCount: { increment: 1 } },
-    });
+    if (trackView) {
+      await this.prisma.listing.update({
+        where: { id: listing.id },
+        data: { viewCount: { increment: 1 } },
+      });
+    }
 
     return this.withReadableImages(listing);
+  }
+
+  async trackView(id: string, userAgent = '') {
+    if (/(?:bot|crawler|spider|slurp|bingpreview|facebookexternalhit|whatsapp)/i.test(userAgent)) {
+      return { tracked: false };
+    }
+
+    const result = await this.prisma.listing.updateMany({
+      where: { id, status: 'ACTIVE' },
+      data: { viewCount: { increment: 1 } },
+    });
+    if (result.count === 0) throw new NotFoundException('Listing not found');
+    return { tracked: true };
   }
 
   async findByUser(userId: string) {
@@ -271,6 +308,7 @@ export class ListingsService {
     });
 
     this.scheduleListingMatching(updated.id, 'listing_updated');
+    void this.notifyIndexNow(updated.slug);
     return this.withReadableImages(updated);
   }
 
@@ -283,6 +321,7 @@ export class ListingsService {
       where: { id },
       data: { status: 'PAUSED' },
     });
+    void this.notifyIndexNow(listing.slug);
     return { message: 'Listing removed from the marketplace' };
   }
 
@@ -377,6 +416,31 @@ export class ListingsService {
       ...listing,
       images: await this.s3Service.getReadableUrls(listing.images ?? []),
     };
+  }
+
+  private async notifyIndexNow(slug: string) {
+    const key = process.env.INDEXNOW_KEY?.trim();
+    if (!key) return;
+
+    const url = `https://remnantmarket.co/marketplace/${encodeURIComponent(slug)}`;
+    try {
+      const response = await fetch('https://api.indexnow.org/indexnow', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json; charset=utf-8' },
+        body: JSON.stringify({
+          host: 'remnantmarket.co',
+          key,
+          keyLocation: 'https://remnantmarket.co/indexnow-key.txt',
+          urlList: [url],
+        }),
+        signal: AbortSignal.timeout(2_000),
+      });
+      if (!response.ok && response.status !== 202) {
+        this.logger.warn(`IndexNow rejected ${url} with status ${response.status}.`);
+      }
+    } catch (error) {
+      this.logger.warn(`IndexNow notification failed for ${url}.`);
+    }
   }
 
   private descriptionSimilarity(
