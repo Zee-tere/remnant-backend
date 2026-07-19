@@ -40,6 +40,19 @@ describe('MatchingService', () => {
     price: { toString: () => '48000' },
   } as any;
 
+  const createService = (prisma: Record<string, unknown> = {}) =>
+    new MatchingService(
+      prisma as any,
+      config as any,
+      { createNotification: jest.fn().mockResolvedValue({}) } as any,
+      {
+        isConfigured: jest.fn().mockReturnValue(false),
+        buildListingText: jest.fn((listing) => [listing.title, listing.description].join(' ')),
+        hashText: jest.fn().mockReturnValue('hash'),
+      } as any,
+      { getReadableUrls: jest.fn() } as any,
+    );
+
   it('creates a high-confidence match and notifies both owners', async () => {
     const prisma = {
       listing: {
@@ -104,5 +117,86 @@ describe('MatchingService', () => {
     );
 
     await expect(service.updateMatchStatus('match-1', 'intruder', 'VIEWED')).rejects.toThrow('Not your match');
+  });
+
+  it('maps public taxonomy labels to their category-specific attributes', () => {
+    const service = createService();
+    const wanted = {
+      ...baseListing,
+      category: 'Clothing & Fashion',
+      compatibilityAttributes: {
+        brand: 'Remnant',
+        size: '10',
+        colorway: 'green',
+        gender: 'women',
+        era: '2020s',
+      },
+    };
+    const offered = {
+      ...candidate,
+      category: 'Clothing & Fashion',
+      compatibilityAttributes: {
+        brand: 'Remnant',
+        size: '10',
+        colorway: 'green',
+        gender: 'women',
+        era: '2020s',
+      },
+    };
+
+    const result = (service as any).scoreAttributes(wanted, offered);
+
+    expect(result.score).toBe(1);
+    expect(result.breakdown.considered).toEqual(
+      expect.objectContaining({
+        colorway: expect.objectContaining({ score: 1 }),
+        gender: expect.objectContaining({ score: 1 }),
+        era: expect.objectContaining({ score: 1 }),
+      }),
+    );
+  });
+
+  it('matches the requested side for wanted listings and complementary sides for pair listings', () => {
+    const service = createService();
+    const wantedRight = {
+      ...baseListing,
+      compatibilityAttributes: { brand: 'Apple', model: 'AirPod Pro 2', side: 'right' },
+    };
+    const offeredRight = {
+      ...candidate,
+      compatibilityAttributes: { brand: 'Apple', model: 'AirPod Pro 2', side: 'right' },
+    };
+    const offeredLeft = {
+      ...candidate,
+      compatibilityAttributes: { brand: 'Apple', model: 'AirPod Pro 2', side: 'left' },
+    };
+    const pairLeft = { ...offeredLeft, intentionTag: 'SELL' };
+    const pairRight = { ...offeredRight, intentionTag: 'SELL' };
+
+    expect((service as any).scoreAttributes(wantedRight, offeredRight).score).toBe(1);
+    expect((service as any).scoreAttributes(wantedRight, offeredLeft).score).toBeLessThan(1);
+    expect((service as any).scoreAttributes(pairLeft, pairRight).score).toBe(1);
+  });
+
+  it('infers a single side from listing copy when structured attributes are absent', () => {
+    const service = createService();
+    const leftPiece = {
+      ...candidate,
+      title: 'Left AirPod Pro 2 earbud',
+      description: 'The left earbud only',
+      pairingKeyword: null,
+      compatibilityAttributes: {},
+    };
+    const rightPiece = {
+      ...candidate,
+      id: 'sell-2',
+      userId: 'seller-2',
+      title: 'Right AirPod Pro 2 earbud',
+      description: 'The right earbud only',
+      pairingKeyword: null,
+      compatibilityAttributes: {},
+    };
+
+    expect((service as any).hasStructuredComplementarity(leftPiece, rightPiece)).toBe(true);
   });
 });

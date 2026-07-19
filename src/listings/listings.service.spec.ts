@@ -8,6 +8,7 @@ import { S3Service } from '../utils/s3.service';
 describe('ListingsService', () => {
   let service: ListingsService;
   let prisma: {
+    $queryRaw: jest.Mock;
     listing: {
       findMany: jest.Mock;
       findUnique: jest.Mock;
@@ -18,6 +19,7 @@ describe('ListingsService', () => {
 
   beforeEach(async () => {
     prisma = {
+      $queryRaw: jest.fn(),
       listing: {
         findMany: jest.fn(),
         findUnique: jest.fn(),
@@ -99,5 +101,51 @@ describe('ListingsService', () => {
       where: { id: 'listing-1', status: 'ACTIVE' },
       data: { viewCount: { increment: 1 } },
     });
+  });
+
+  it('prioritizes location, then intent, then description for similar listings', async () => {
+    const source = {
+      id: 'source',
+      title: 'AirPod Pro right earbud',
+      description: 'Right replacement earbud',
+      pairingKeyword: 'AirPod Pro right',
+      city: 'Lagos',
+      intentionTag: 'SELL',
+      images: [],
+    };
+    const sameCity = {
+      ...source,
+      id: 'same-city',
+      title: 'Wooden chair',
+      description: 'Dining chair',
+      pairingKeyword: null,
+      intentionTag: 'TRADE',
+    };
+    const sameIntentAndDescription = {
+      ...source,
+      id: 'same-intent-description',
+      city: 'Abuja',
+    };
+    const sameDescription = {
+      ...source,
+      id: 'same-description',
+      city: 'Kano',
+      intentionTag: 'DONATE',
+    };
+    const candidates = [sameDescription, sameIntentAndDescription, sameCity];
+
+    prisma.listing.findUnique.mockResolvedValue(source);
+    prisma.$queryRaw.mockRejectedValue(new Error('vector extension unavailable'));
+    prisma.listing.findMany
+      .mockResolvedValueOnce(candidates)
+      .mockResolvedValueOnce(candidates);
+
+    const result = await service.findSimilar(source.id, 3);
+
+    expect(result.map((listing) => listing.id)).toEqual([
+      'same-city',
+      'same-intent-description',
+      'same-description',
+    ]);
   });
 });

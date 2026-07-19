@@ -39,11 +39,34 @@ const CATEGORY_KEYS: Record<string, string[]> = {
   electronics: ['brand', 'model', 'generation', 'partType', 'side', 'color'],
   fashion: ['brand', 'size', 'colorway', 'side', 'gender', 'era'],
   shoes: ['brand', 'model', 'size', 'colorway', 'side'],
+  accessories: ['brand', 'material', 'size', 'color', 'pieceIdentifier', 'setName'],
   car_parts: ['make', 'model', 'year', 'partType', 'side'],
   auto_parts: ['make', 'model', 'year', 'partType', 'side'],
+  books: ['author', 'edition', 'isbn', 'volume', 'pieceIdentifier'],
+  hobbies: ['brand', 'model', 'setName', 'pieceIdentifier', 'size'],
+  sports: ['brand', 'model', 'size', 'side', 'pieceIdentifier'],
+  kitchen: ['brand', 'model', 'collection', 'pieceType', 'color', 'dimensions'],
+  tools: ['brand', 'model', 'partType', 'size'],
   collectibles: ['setName', 'setSize', 'pieceIdentifier', 'era', 'artist'],
   art: ['setName', 'setSize', 'pieceIdentifier', 'artist', 'dimensions', 'era'],
   furniture: ['brand', 'collection', 'pieceType', 'color', 'dimensions'],
+  toys: ['brand', 'setName', 'setSize', 'pieceIdentifier', 'model'],
+};
+
+const CATEGORY_ALIASES: Record<string, string> = {
+  electronics_and_gadgets: 'electronics',
+  furniture_and_home_decor: 'furniture',
+  clothing_and_fashion: 'fashion',
+  shoes_and_footwear: 'shoes',
+  accessories_and_jewelry: 'accessories',
+  vehicles_and_auto_parts: 'auto_parts',
+  books_and_education: 'books',
+  hobbies_and_leisure: 'hobbies',
+  sports_and_outdoor: 'sports',
+  kitchen_and_home_essentials: 'kitchen',
+  tools_and_diy: 'tools',
+  collectibles_and_antiques: 'collectibles',
+  toys_and_games: 'toys',
 };
 
 @Injectable()
@@ -373,9 +396,9 @@ export class MatchingService {
   }
 
   private scoreAttributes(a: Listing, b: Listing) {
-    const attrsA = this.normalizeAttributes(a.compatibilityAttributes as CompatibilityAttributes | null);
-    const attrsB = this.normalizeAttributes(b.compatibilityAttributes as CompatibilityAttributes | null);
-    const category = a.category.toLowerCase().replace(/\s+/g, '_');
+    const attrsA = this.getCompatibilityAttributes(a);
+    const attrsB = this.getCompatibilityAttributes(b);
+    const category = this.getCategoryKey(a.category);
     const keys = CATEGORY_KEYS[category] ?? ['brand', 'model', 'size', 'color', 'side', 'partType', 'setName', 'pieceIdentifier'];
     const considered: Record<string, Prisma.InputJsonValue> = {};
 
@@ -389,7 +412,7 @@ export class MatchingService {
       if (left === undefined || right === undefined) continue;
 
       available += 1;
-      const keyScore = this.scoreAttributeValue(normalizedKey, left, right);
+      const keyScore = this.scoreAttributeValue(normalizedKey, left, right, a.intentionTag, b.intentionTag);
       matched += keyScore;
       considered[normalizedKey] = { left, right, score: this.round(keyScore) };
     }
@@ -408,13 +431,34 @@ export class MatchingService {
     };
   }
 
-  private scoreAttributeValue(key: string, left: string, right: string) {
-    if (left === right) return key === 'side' ? 0.2 : 1;
-    if (key === 'side' && COMPLEMENTARY_SIDES[left] === right) return 1;
+  private scoreAttributeValue(
+    key: string,
+    left: string,
+    right: string,
+    leftIntent: IntentionTag,
+    rightIntent: IntentionTag,
+  ) {
+    if (key === 'side') {
+      const fulfillsWantedListing = leftIntent === 'WANTED' || rightIntent === 'WANTED';
+      if (fulfillsWantedListing) return left === right ? 1 : 0;
+      if (COMPLEMENTARY_SIDES[left] === right) return 1;
+      return left === right ? 0.2 : 0;
+    }
+    if (left === right) return 1;
     if (key === 'pieceidentifier') return 0.9;
     if (key === 'year') return this.scoreYear(left, right);
     if (key === 'size') return this.scoreSize(left, right);
     return 0;
+  }
+
+  private getCategoryKey(category: string) {
+    const normalized = category
+      .trim()
+      .toLowerCase()
+      .replace(/&/g, ' and ')
+      .replace(/[^a-z0-9]+/g, '_')
+      .replace(/^_+|_+$/g, '');
+    return CATEGORY_ALIASES[normalized] ?? normalized;
   }
 
   private scoreYear(left: string, right: string) {
@@ -470,9 +514,28 @@ export class MatchingService {
   }
 
   private hasStructuredComplementarity(a: Listing, b: Listing) {
-    const attrsA = this.normalizeAttributes(a.compatibilityAttributes as CompatibilityAttributes | null);
-    const attrsB = this.normalizeAttributes(b.compatibilityAttributes as CompatibilityAttributes | null);
+    const attrsA = this.getCompatibilityAttributes(a);
+    const attrsB = this.getCompatibilityAttributes(b);
     return Boolean(attrsA.side && attrsB.side && COMPLEMENTARY_SIDES[attrsA.side] === attrsB.side);
+  }
+
+  private getCompatibilityAttributes(listing: Listing) {
+    const attributes = this.normalizeAttributes(
+      listing.compatibilityAttributes as CompatibilityAttributes | null,
+    );
+    if (attributes.side) return attributes;
+
+    const text = [listing.title, listing.description, listing.pairingKeyword]
+      .filter(Boolean)
+      .join(' ')
+      .toLowerCase();
+    const mentionedSides = Object.keys(COMPLEMENTARY_SIDES).filter((side) =>
+      new RegExp(`\\b${side}\\b`, 'i').test(text),
+    );
+    if (mentionedSides.length === 1) {
+      attributes.side = mentionedSides[0];
+    }
+    return attributes;
   }
 
   private normalizeAttributes(attributes?: CompatibilityAttributes | null): Record<string, string> {
