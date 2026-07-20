@@ -1,5 +1,12 @@
-import { IsDateString, IsEnum, IsOptional, IsString, MaxLength, ValidateIf } from 'class-validator';
+import { IsDateString, IsEnum, IsNotEmpty, IsOptional, IsString, MaxLength, ValidateIf } from 'class-validator';
 import { ListingStatus, TransactionStatus, UserRole } from '@prisma/client';
+
+export enum AdminReportAction {
+  DISMISS = 'DISMISS',
+  FLAG_LISTING = 'FLAG_LISTING',
+  REMOVE_LISTING = 'REMOVE_LISTING',
+  BAN_USER = 'BAN_USER',
+}
 
 export class AdminUpdateUserDto {
   @IsOptional()
@@ -26,4 +33,21 @@ export class ResolveReportDto {
   @IsString()
   @MaxLength(1000)
   resolution: string;
+}
+
+export class AdminReportActionDto {
+  @IsEnum(AdminReportAction)
+  action: AdminReportAction;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(1000)
+  resolution?: string;
+}
+
+export class AdminMessageUserDto {
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(1000)
+  message: string;
 }

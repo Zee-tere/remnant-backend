@@ -141,6 +141,8 @@ model Listing {
   intentionTag            IntentionTag
   pairingKeyword          String?
   compatibilityAttributes Json?
+  isGuestListing          Boolean                      @default(false)
+  guestContact            Json?
   embedding               Unsupported("vector(1536)")?
   embeddingHash           String?
   embeddingId             String?

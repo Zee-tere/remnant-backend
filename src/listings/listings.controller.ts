@@ -15,7 +15,7 @@ import {
 import { Throttle } from '@nestjs/throttler';
 import { ListingsService } from './listings.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
-import { CreateListingDto, UpdateListingDto } from './listings.dto';
+import { CreateGuestListingDto, CreateListingDto, UpdateListingDto } from './listings.dto';
 import { Request } from 'express';
 
 @Controller('listings')
@@ -31,7 +31,7 @@ export class ListingsController {
 
   @Post('guest')
   @Throttle({ default: { limit: 4, ttl: 60000 } })
-  async createGuest(@Body() dto: CreateListingDto) {
+  async createGuest(@Body() dto: CreateGuestListingDto) {
     return this.listingsService.createGuest(dto);
   }
 
@@ -105,6 +105,13 @@ export class ListingsController {
   @Header('Cache-Control', 'public, max-age=120, stale-while-revalidate=300')
   async findSimilar(@Param('id') id: string, @Query('limit') limit?: string) {
     return this.listingsService.findSimilar(id, limit ? parseInt(limit, 10) : undefined);
+  }
+
+  @Get(':id/contact')
+  @Header('Cache-Control', 'no-store, max-age=0')
+  @Throttle({ default: { limit: 20, ttl: 60000 } })
+  async getGuestContact(@Param('id') id: string) {
+    return this.listingsService.getGuestContact(id);
   }
 
   @Get(':id')

@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException, ForbiddenException, Logger, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { CreateListingDto, UpdateListingDto } from './listings.dto';
+import { CreateGuestListingDto, CreateListingDto, GuestContactDto, UpdateListingDto } from './listings.dto';
 import { Prisma } from '@prisma/client';
 import { MatchingService } from '../matching/matching.service';
 import { EmbeddingService } from '../matching/embedding.service';
@@ -61,16 +61,78 @@ export class ListingsService {
     return this.withReadableImages(listing);
   }
 
-  async createGuest(dto: CreateListingDto) {
-    const guestUser = await this.prisma.user.create({
+  async createGuest(dto: CreateGuestListingDto) {
+    this.assertManagedImages(dto.images);
+    const guestContact = this.normalizeGuestContact(dto.guestContact);
+    const slug = this.generateSlug(dto.title);
+
+    const listing = await this.prisma.listing.create({
       data: {
-        email: `guest-${randomUUID()}@guest.remnant.local`,
-        name: 'Guest',
-        emailVerified: false,
+        user: {
+          create: {
+            email: `guest-${randomUUID()}@guest.remnant.local`,
+            name: 'Guest',
+            emailVerified: false,
+          },
+        },
+        title: dto.title,
+        description: dto.description,
+        slug,
+        category: dto.category,
+        condition: dto.condition,
+        intentionTag: dto.intentionTag,
+        pairingKeyword: dto.pairingKeyword,
+        compatibilityAttributes: dto.compatibilityAttributes as Prisma.InputJsonValue,
+        price: dto.price ? new Prisma.Decimal(dto.price) : null,
+        city: dto.city,
+        images: dto.images || [],
+        isGuestListing: true,
+        guestContact: guestContact as Prisma.InputJsonValue,
       },
+      include: { user: { select: { id: true, name: true, avatarUrl: true, trustTier: true } } },
     });
 
-    return this.create(guestUser.id, dto);
+    this.scheduleListingMatching(listing.id, 'guest_listing_created');
+    void this.notifyIndexNow(listing.slug);
+    return this.withReadableImages(listing);
+  }
+
+  async getGuestContact(id: string) {
+    const listing = await this.prisma.listing.findFirst({
+      where: { id, status: 'ACTIVE' },
+      select: {
+        isGuestListing: true,
+        guestContact: true,
+        compatibilityAttributes: true,
+      },
+    });
+    if (!listing) throw new NotFoundException('Listing not found');
+
+    const legacyGuestListing = Boolean(
+      listing.compatibilityAttributes &&
+      typeof listing.compatibilityAttributes === 'object' &&
+      !Array.isArray(listing.compatibilityAttributes) &&
+      (listing.compatibilityAttributes as Record<string, unknown>).guestListing,
+    );
+    if (!listing.isGuestListing && !legacyGuestListing) {
+      throw new BadRequestException('This seller uses Remnant messages');
+    }
+
+    if (!listing.guestContact || typeof listing.guestContact !== 'object' || Array.isArray(listing.guestContact)) {
+      throw new NotFoundException('This guest seller has not added contact details');
+    }
+
+    const contact = listing.guestContact as Record<string, unknown>;
+    const methods = {
+      phone: typeof contact.phone === 'string' ? contact.phone : undefined,
+      email: typeof contact.email === 'string' ? contact.email : undefined,
+      telegram: typeof contact.telegram === 'string' ? contact.telegram : undefined,
+    };
+    if (!methods.phone && !methods.email && !methods.telegram) {
+      throw new NotFoundException('This guest seller has not added contact details');
+    }
+
+    return methods;
   }
 
   async findAll(filters?: {
@@ -414,7 +476,45 @@ export class ListingsService {
   private async withReadableImages<T extends { images: string[] }>(listing: T): Promise<T> {
     return {
       ...listing,
+      guestContact: undefined,
       images: await this.s3Service.getReadableUrls(listing.images ?? []),
+    } as T;
+  }
+
+  private normalizeGuestContact(contact: GuestContactDto) {
+    const phone = contact.phone?.trim();
+    const email = contact.email?.trim().toLowerCase();
+    const telegram = contact.telegram?.trim();
+
+    if (phone) {
+      const digitCount = phone.replace(/\D/g, '').length;
+      if (digitCount < 7 || digitCount > 15) {
+        throw new BadRequestException('Enter a valid phone number with 7 to 15 digits');
+      }
+    }
+
+    if (telegram) {
+      let url: URL;
+      try {
+        url = new URL(telegram);
+      } catch {
+        throw new BadRequestException('Enter a valid Telegram link');
+      }
+      const host = url.hostname.toLowerCase();
+      const username = url.pathname.replace(/^\//, '').replace(/\/$/, '');
+      if (url.protocol !== 'https:' || !['t.me', 'www.t.me'].includes(host) || !/^[a-zA-Z0-9_]{5,32}$/.test(username)) {
+        throw new BadRequestException('Use a Telegram profile link such as https://t.me/username');
+      }
+    }
+
+    if (!phone && !email && !telegram) {
+      throw new BadRequestException('Add a phone number, Telegram link, or email so buyers can reach you');
+    }
+
+    return {
+      ...(phone ? { phone } : {}),
+      ...(email ? { email } : {}),
+      ...(telegram ? { telegram } : {}),
     };
   }
 

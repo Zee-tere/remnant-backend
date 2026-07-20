@@ -10,7 +10,9 @@ describe('ListingsService', () => {
   let prisma: {
     $queryRaw: jest.Mock;
     listing: {
+      create: jest.Mock;
       findMany: jest.Mock;
+      findFirst: jest.Mock;
       findUnique: jest.Mock;
       update: jest.Mock;
       updateMany: jest.Mock;
@@ -21,7 +23,9 @@ describe('ListingsService', () => {
     prisma = {
       $queryRaw: jest.fn(),
       listing: {
+        create: jest.fn(),
         findMany: jest.fn(),
+        findFirst: jest.fn(),
         findUnique: jest.fn(),
         update: jest.fn(),
         updateMany: jest.fn(),
@@ -31,7 +35,7 @@ describe('ListingsService', () => {
       providers: [
         ListingsService,
         { provide: PrismaService, useValue: prisma },
-        { provide: MatchingService, useValue: { runMatchForListing: jest.fn() } },
+        { provide: MatchingService, useValue: { scheduleMatchForListing: jest.fn() } },
         { provide: EmbeddingService, useValue: { isConfigured: jest.fn().mockReturnValue(false) } },
         {
           provide: S3Service,
@@ -89,6 +93,65 @@ describe('ListingsService', () => {
     await service.findOne('listing-1', false);
 
     expect(prisma.listing.update).not.toHaveBeenCalled();
+  });
+
+  it('does not expose guest contact details in ordinary listing responses', async () => {
+    prisma.listing.findUnique.mockResolvedValue({
+      id: 'guest-listing',
+      images: [],
+      isGuestListing: true,
+      guestContact: { email: 'seller@example.com' },
+    });
+
+    const listing = await service.findOne('guest-listing', false);
+
+    expect((listing as typeof listing & { guestContact?: unknown }).guestContact).toBeUndefined();
+  });
+
+  it('returns guest contact details only through the dedicated contact lookup', async () => {
+    prisma.listing.findFirst.mockResolvedValue({
+      isGuestListing: true,
+      guestContact: { phone: '+234 800 000 0000', telegram: 'https://t.me/remnantseller' },
+      compatibilityAttributes: { guestListing: true },
+    });
+
+    await expect(service.getGuestContact('guest-listing')).resolves.toEqual({
+      phone: '+234 800 000 0000',
+      email: undefined,
+      telegram: 'https://t.me/remnantseller',
+    });
+  });
+
+  it('creates a guest listing and seller together with validated contact details', async () => {
+    prisma.listing.create.mockResolvedValue({
+      id: 'guest-listing',
+      slug: 'chair-1',
+      images: [],
+      isGuestListing: true,
+      guestContact: { email: 'seller@example.com' },
+    });
+
+    await service.createGuest({
+      title: 'Chair',
+      description: 'Chair',
+      category: 'Furniture',
+      condition: 'FAIR',
+      intentionTag: 'SELL',
+      price: '5000',
+      city: 'Lagos',
+      images: [],
+      guestContact: { email: 'Seller@Example.com' },
+    } as never);
+
+    expect(prisma.listing.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          isGuestListing: true,
+          guestContact: { email: 'seller@example.com' },
+          user: { create: expect.objectContaining({ name: 'Guest' }) },
+        }),
+      }),
+    );
   });
 
   it('ignores crawler views and records genuine browser views', async () => {

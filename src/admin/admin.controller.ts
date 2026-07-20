@@ -1,9 +1,11 @@
-import { Body, Controller, Get, Param, Patch, Post, Query, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Req, UseGuards } from '@nestjs/common';
 import { Request } from 'express';
 import { AdminGuard } from './admin.guard';
 import { AdminService } from './admin.service';
 import {
   AdminListingStatusDto,
+  AdminMessageUserDto,
+  AdminReportActionDto,
   AdminTransactionStatusDto,
   AdminUpdateUserDto,
   ResolveReportDto,
@@ -29,8 +31,28 @@ export class AdminController {
   }
 
   @Patch('users/:id')
-  updateUser(@Param('id') id: string, @Body() data: AdminUpdateUserDto) {
-    return this.adminService.updateUser(id, data);
+  updateUser(@Param('id') id: string, @Body() data: AdminUpdateUserDto, @Req() req: Request) {
+    return this.adminService.updateUser(id, data, (req.user as { userId: string }).userId);
+  }
+
+  @Post('users/:id/message')
+  messageUser(@Param('id') id: string, @Body() dto: AdminMessageUserDto) {
+    return this.adminService.messageUser(id, dto.message);
+  }
+
+  @Get('listings')
+  getListings(
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Query('search') search?: string,
+    @Query('status') status?: string,
+  ) {
+    return this.adminService.getListings(
+      Math.max(Number(page) || 1, 1),
+      Math.min(Math.max(Number(limit) || 20, 1), 100),
+      search?.trim().slice(0, 100),
+      status,
+    );
   }
 
   @Get('listings/flagged')
@@ -41,6 +63,11 @@ export class AdminController {
   @Patch('listings/:id')
   updateListingStatus(@Param('id') id: string, @Body() dto: AdminListingStatusDto) {
     return this.adminService.updateListingStatus(id, dto.status);
+  }
+
+  @Delete('listings/:id')
+  removeListing(@Param('id') id: string) {
+    return this.adminService.removeListing(id);
   }
 
   @Get('transactions')
@@ -62,11 +89,17 @@ export class AdminController {
   }
 
   @Get('reports')
-  getReports(@Query('page') page?: string, @Query('limit') limit?: string) {
+  getReports(@Query('page') page?: string, @Query('limit') limit?: string, @Query('status') status?: string) {
     return this.adminService.getReports(
       Math.max(Number(page) || 1, 1),
       Math.min(Math.max(Number(limit) || 20, 1), 100),
+      status,
     );
+  }
+
+  @Post('reports/:id/action')
+  actOnReport(@Param('id') id: string, @Body() dto: AdminReportActionDto) {
+    return this.adminService.actOnReport(id, dto);
   }
 
   @Patch('reports/:id')
