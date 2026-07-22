@@ -139,6 +139,7 @@ AWS_S3_PUBLIC_BASE_URL
 AWS_SES_REGION
 EMAIL_FROM
 OPENAI_API_KEY
+GUEST_ACCESS_SECRET
 SUPABASE_JWT_SECRET
 SUPABASE_URL
 ESCROW_ENABLED
@@ -149,6 +150,8 @@ MATCH_MAX_CANDIDATES
 MATCH_PRICE_TOLERANCE_PERCENT
 MATCH_REQUIRE_CITY
 PLATFORM_FEE_PERCENTAGE
+PLATFORM_PAYMENTS_ENABLED
+INDEXNOW_KEY
 ```
 
 `COGNITO_CLIENT_ID` must be the public web app client. Do not use a Cognito app
@@ -174,8 +177,12 @@ Only `remnant-uploads-prod` should be used by the backend upload service:
 ```env
 AWS_REGION=us-east-1
 AWS_S3_BUCKET=remnant-uploads-prod
-AWS_S3_PUBLIC_BASE_URL=https://remnant-uploads-prod.s3.us-east-1.amazonaws.com
+AWS_S3_PUBLIC_BASE_URL=
 ```
+
+Keep `AWS_S3_PUBLIC_BASE_URL` empty while the bucket is private. The API returns
+short-lived signed read URLs, so listing images remain available without making
+the upload bucket public.
 
 The Lambda execution role `remnant-lambda-role` needs write access to the upload
 prefix:

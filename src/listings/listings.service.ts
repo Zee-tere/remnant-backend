@@ -10,6 +10,19 @@ import { IntentionTag } from '@prisma/client';
 import { NIGERIAN_STATES } from '../config/nigeria-locations';
 import { LISTING_CATEGORIES } from '../config/listing-taxonomy';
 
+const listingCardSelect = {
+  id: true,
+  title: true,
+  slug: true,
+  intentionTag: true,
+  price: true,
+  status: true,
+  images: true,
+  city: true,
+  createdAt: true,
+  updatedAt: true,
+} satisfies Prisma.ListingSelect;
+
 @Injectable()
 export class ListingsService {
   private readonly logger = new Logger(ListingsService.name);
@@ -183,15 +196,13 @@ export class ListingsService {
         skip,
         take: limit,
         orderBy: { createdAt: 'desc' },
-        include: {
-          user: { select: { id: true, name: true, avatarUrl: true, city: true, trustTier: true } },
-        },
+        select: listingCardSelect,
       }),
       this.prisma.listing.count({ where }),
     ]);
 
     return {
-      listings: await Promise.all(listings.map((listing) => this.withReadableImages(listing))),
+      listings: await Promise.all(listings.map((listing) => this.withReadableImages(listing, 1))),
       total,
       page,
       limit,
@@ -317,6 +328,14 @@ export class ListingsService {
         where: { status: 'ACTIVE', id: { not: id } },
         orderBy: { createdAt: 'desc' },
         take: 100,
+        select: {
+          id: true,
+          title: true,
+          description: true,
+          pairingKeyword: true,
+          city: true,
+          intentionTag: true,
+        },
       });
       rankedIds = candidates
         .map((candidate) => ({
@@ -334,13 +353,11 @@ export class ListingsService {
     if (rankedIds.length === 0) return [];
     const listings = await this.prisma.listing.findMany({
       where: { id: { in: rankedIds }, status: 'ACTIVE' },
-      include: {
-        user: { select: { id: true, name: true, avatarUrl: true, city: true, trustTier: true } },
-      },
+      select: listingCardSelect,
     });
     const byId = new Map(listings.map((listing) => [listing.id, listing]));
     const ordered = rankedIds.map((listingId) => byId.get(listingId)).filter((listing): listing is NonNullable<typeof listing> => Boolean(listing));
-    return Promise.all(ordered.map((listing) => this.withReadableImages(listing)));
+    return Promise.all(ordered.map((listing) => this.withReadableImages(listing, 1)));
   }
 
   async update(id: string, userId: string, dto: UpdateListingDto) {
@@ -430,6 +447,16 @@ export class ListingsService {
     const query = params.query?.trim();
     const limit = Math.min(Math.max(Number(params.limit) || 20, 1), 50);
 
+    if (params.category && !LISTING_CATEGORIES.includes(params.category as (typeof LISTING_CATEGORIES)[number])) {
+      throw new BadRequestException('Unknown listing category');
+    }
+    if (params.city && !NIGERIAN_STATES.includes(params.city as (typeof NIGERIAN_STATES)[number])) {
+      throw new BadRequestException('Unknown Nigerian state');
+    }
+    if (params.intent && !Object.values(IntentionTag).includes(params.intent as IntentionTag)) {
+      throw new BadRequestException('Unknown listing intention');
+    }
+
     if (!query || !this.embeddingService.isConfigured()) {
       const fallback = await this.findAll({
         category: params.category,
@@ -443,8 +470,8 @@ export class ListingsService {
 
     const queryEmbedding = await this.embeddingService.generateEmbedding(query);
     const vector = JSON.stringify(queryEmbedding);
-    const categoryFilter = params.category ? Prisma.sql`AND l.category ILIKE ${`%${params.category}%`}` : Prisma.empty;
-    const cityFilter = params.city ? Prisma.sql`AND l.city ILIKE ${`%${params.city}%`}` : Prisma.empty;
+    const categoryFilter = params.category ? Prisma.sql`AND l.category = ${params.category}` : Prisma.empty;
+    const cityFilter = params.city ? Prisma.sql`AND l.city = ${params.city}` : Prisma.empty;
     const intentFilter = params.intent
       ? Prisma.sql`AND l."intentionTag"::text = ${params.intent}`
       : Prisma.empty;
@@ -452,7 +479,18 @@ export class ListingsService {
     const results = await this.prisma.$queryRaw<
       Array<Record<string, unknown> & { images: string[]; relevance: number | string }>
     >`
-      SELECT l.*, (1 - (l.embedding <=> ${vector}::vector)) AS relevance
+      SELECT
+        l.id,
+        l.title,
+        l.slug,
+        l."intentionTag",
+        l.price,
+        l.status,
+        l.images,
+        l.city,
+        l."createdAt",
+        l."updatedAt",
+        (1 - (l.embedding <=> ${vector}::vector)) AS relevance
       FROM "Listing" l
       WHERE l.status = 'ACTIVE'
         AND l.embedding IS NOT NULL
@@ -466,18 +504,18 @@ export class ListingsService {
     const listings = results
       .map((row) => {
         const relevance = Number(row.relevance);
-        const { embedding: _embedding, ...listing } = row;
-        return { ...listing, relevance };
+        return { ...row, relevance };
       })
       .filter((row) => Number(row.relevance) > 0.5);
-    return Promise.all(listings.map((listing) => this.withReadableImages(listing)));
+    return Promise.all(listings.map((listing) => this.withReadableImages(listing, 1)));
   }
 
-  private async withReadableImages<T extends { images: string[] }>(listing: T): Promise<T> {
+  private async withReadableImages<T extends { images: string[] }>(listing: T, maxImages?: number): Promise<T> {
+    const images = maxImages ? listing.images.slice(0, maxImages) : listing.images;
     return {
       ...listing,
       guestContact: undefined,
-      images: await this.s3Service.getReadableUrls(listing.images ?? []),
+      images: await this.s3Service.getReadableUrls(images ?? []),
     } as T;
   }
 

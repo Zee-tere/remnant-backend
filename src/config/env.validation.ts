@@ -16,6 +16,13 @@ function assertPresent(config: Environment, key: string, errors: string[]) {
   }
 }
 
+function assertSecretLength(config: Environment, key: string, minimum: number, errors: string[]) {
+  const value = read(config, key);
+  if (value.length < minimum) {
+    errors.push(`${key} must be at least ${minimum} characters`);
+  }
+}
+
 function assertProductionUrl(
   config: Environment,
   key: string,
@@ -75,11 +82,13 @@ export function validateEnvironment(config: Environment) {
       'ALLOWED_ORIGINS',
       'AWS_REGION',
       'AWS_S3_BUCKET',
+      'GUEST_ACCESS_SECRET',
       'ESCROW_ENABLED',
     ].forEach((key) => assertPresent(config, key, errors));
 
     assertSupabaseDatabase(config, errors);
     assertProductionUrl(config, 'FRONTEND_URL', errors);
+    assertSecretLength(config, 'GUEST_ACCESS_SECRET', 32, errors);
     if (read(config, 'ESCROW_ENABLED') === 'true') {
       ['ESCROW_API_EMAIL', 'ESCROW_API_KEY', 'ESCROW_WEBHOOK_SECRET'].forEach(
         (key) => assertPresent(config, key, errors),

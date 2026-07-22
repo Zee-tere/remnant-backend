@@ -15,6 +15,13 @@ export class UserController {
     return this.userService.getUserById(user.sub, true);
   }
 
+  @Get('me/summary')
+  @UseGuards(JwtAuthGuard)
+  async getMySummary(@Req() req: Request) {
+    const user = req.user as { sub: string };
+    return this.userService.getDashboardSummary(user.sub);
+  }
+
   @Put('me')
   @UseGuards(JwtAuthGuard)
   async updateMe(

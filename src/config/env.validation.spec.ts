@@ -15,14 +15,17 @@ const productionEnvironment = {
   AWS_S3_BUCKET: 'remnant-uploads-prod',
   ESCROW_ENABLED: 'false',
   PAYSTACK_ENABLED: 'false',
+  GUEST_ACCESS_SECRET: 'a'.repeat(64),
 };
 
 describe('validateEnvironment', () => {
-  it('keeps the core API available when optional guest messaging is not configured', () => {
-    expect(() => validateEnvironment(productionEnvironment)).not.toThrow();
+  it('requires guest messaging to be configured for production', () => {
+    expect(() =>
+      validateEnvironment({ ...productionEnvironment, GUEST_ACCESS_SECRET: '' }),
+    ).toThrow('GUEST_ACCESS_SECRET');
   });
 
-  it('still validates a configured guest messaging secret without making it global', () => {
+  it('accepts a strong guest messaging secret', () => {
     expect(() =>
       validateEnvironment({
         ...productionEnvironment,

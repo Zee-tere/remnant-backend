@@ -7,6 +7,7 @@ import { S3Service } from '../utils/s3.service';
 
 describe('ListingsService', () => {
   let service: ListingsService;
+  let s3: { getReadableUrls: jest.Mock; getObjectKey: jest.Mock };
   let prisma: {
     $queryRaw: jest.Mock;
     listing: {
@@ -16,6 +17,7 @@ describe('ListingsService', () => {
       findUnique: jest.Mock;
       update: jest.Mock;
       updateMany: jest.Mock;
+      count: jest.Mock;
     };
   };
 
@@ -29,7 +31,12 @@ describe('ListingsService', () => {
         findUnique: jest.fn(),
         update: jest.fn(),
         updateMany: jest.fn(),
+        count: jest.fn(),
       },
+    };
+    s3 = {
+      getReadableUrls: jest.fn().mockImplementation((images: string[]) => images),
+      getObjectKey: jest.fn(),
     };
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -39,10 +46,7 @@ describe('ListingsService', () => {
         { provide: EmbeddingService, useValue: { isConfigured: jest.fn().mockReturnValue(false) } },
         {
           provide: S3Service,
-          useValue: {
-            getReadableUrls: jest.fn().mockImplementation((images: string[]) => images),
-            getObjectKey: jest.fn(),
-          },
+          useValue: s3,
         },
       ],
     }).compile();
@@ -93,6 +97,40 @@ describe('ListingsService', () => {
     await service.findOne('listing-1', false);
 
     expect(prisma.listing.update).not.toHaveBeenCalled();
+  });
+
+  it('returns a lightweight feed and resolves only the card image', async () => {
+    prisma.listing.findMany.mockResolvedValue([
+      {
+        id: 'listing-1',
+        title: 'Chair',
+        slug: 'chair-1',
+        intentionTag: 'SELL',
+        price: null,
+        status: 'ACTIVE',
+        images: ['first.jpg', 'second.jpg'],
+        city: 'Lagos',
+        createdAt: new Date('2026-07-01T10:00:00.000Z'),
+        updatedAt: new Date('2026-07-01T10:00:00.000Z'),
+      },
+    ]);
+    prisma.listing.count.mockResolvedValue(1);
+
+    const result = await service.findAll({ page: 1, limit: 12 });
+
+    expect(result.listings[0].images).toEqual(['first.jpg']);
+    expect(s3.getReadableUrls).toHaveBeenCalledWith(['first.jpg']);
+    expect(prisma.listing.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        select: expect.objectContaining({
+          id: true,
+          title: true,
+          images: true,
+          createdAt: true,
+          updatedAt: true,
+        }),
+      }),
+    );
   });
 
   it('does not expose guest contact details in ordinary listing responses', async () => {

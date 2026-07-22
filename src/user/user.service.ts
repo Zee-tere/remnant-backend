@@ -57,6 +57,28 @@ export class UserService {
     });
   }
 
+  async getDashboardSummary(userId: string) {
+    const [listings, activeListings, unreadAlerts, pendingMatches, unreadMessages] = await Promise.all([
+      this.prisma.listing.count({ where: { userId } }),
+      this.prisma.listing.count({ where: { userId, status: 'ACTIVE' } }),
+      this.prisma.notification.count({ where: { userId, isRead: false } }),
+      this.prisma.match.count({
+        where: {
+          status: 'PENDING',
+          OR: [{ listingA: { userId } }, { listingB: { userId } }],
+        },
+      }),
+      this.prisma.conversation.count({
+        where: {
+          OR: [{ buyerId: userId }, { sellerId: userId }],
+          messages: { some: { senderId: { not: userId }, readAt: null } },
+        },
+      }),
+    ]);
+
+    return { listings, activeListings, unreadAlerts, pendingMatches, unreadMessages };
+  }
+
   async getAchievements(userId: string) {
     const achievements = await this.prisma.userAchievement.findMany({
       where: { userId },
