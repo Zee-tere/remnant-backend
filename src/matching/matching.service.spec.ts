@@ -199,4 +199,26 @@ describe('MatchingService', () => {
 
     expect((service as any).hasStructuredComplementarity(leftPiece, rightPiece)).toBe(true);
   });
+
+  it('gives same-state text matches a decisive score advantage', () => {
+    const service = createService();
+    const wanted = {
+      ...baseListing,
+      compatibilityAttributes: {},
+      pairingKeyword: 'AirPod Pro right earbud',
+    };
+    const nearby = {
+      ...candidate,
+      compatibilityAttributes: {},
+      pairingKeyword: 'AirPod Pro right earbud',
+      city: 'Lagos',
+    };
+    const distant = { ...nearby, id: 'distant', city: 'Kano' };
+
+    const nearbyScore = (service as any).scoreCandidate(wanted, nearby).score;
+    const distantScore = (service as any).scoreCandidate(wanted, distant).score;
+
+    expect(nearbyScore).toBeGreaterThanOrEqual(0.72);
+    expect(nearbyScore - distantScore).toBeGreaterThanOrEqual(0.2);
+  });
 });

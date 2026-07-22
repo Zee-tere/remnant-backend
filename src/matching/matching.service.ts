@@ -78,7 +78,6 @@ export class MatchingService {
   private readonly maxCandidates: number;
   private readonly priceTolerancePercent: number;
   private readonly requireCityMatch: boolean;
-  private readonly pendingJobs = new Set<string>();
 
   constructor(
     private prisma: PrismaService,
@@ -93,19 +92,6 @@ export class MatchingService {
     this.maxCandidates = parseInt(this.configService.get<string>('MATCH_MAX_CANDIDATES', '200'), 10);
     this.priceTolerancePercent = parseFloat(this.configService.get<string>('MATCH_PRICE_TOLERANCE_PERCENT', '25'));
     this.requireCityMatch = this.configService.get<string>('MATCH_REQUIRE_CITY', 'false') === 'true';
-  }
-
-  scheduleMatchForListing(listingId: string, reason = 'listing_changed') {
-    if (this.pendingJobs.has(listingId)) return;
-    this.pendingJobs.add(listingId);
-
-    setImmediate(() => {
-      void this.runMatchForListing(listingId, reason)
-        .catch((error) => {
-          this.logger.error(`Failed matching job for ${listingId}`, error);
-        })
-        .finally(() => this.pendingJobs.delete(listingId));
-    });
   }
 
   async runMatchForListing(listingId: string, reason = 'manual') {
@@ -291,25 +277,36 @@ export class MatchingService {
         ? Prisma.sql`AND l.city ILIKE ${listing.city}`
         : Prisma.empty;
 
-    const candidates = await this.prisma.$queryRaw<ListingForMatching[]>`
-      SELECT l.*, (1 - (l.embedding <=> ${listing.embeddingVector}::vector)) AS "semanticScore"
-      FROM "Listing" l
-      WHERE l.id != ${listing.id}
-        AND l.category = ${listing.category}
-        AND l.status = 'ACTIVE'
-        AND l."userId" != ${listing.userId}
-        AND l."intentionTag"::text IN (${Prisma.join(compatibleIntents)})
-        AND l.embedding IS NOT NULL
-        ${cityFilter}
-      ORDER BY l.embedding <=> ${listing.embeddingVector}::vector
-      LIMIT ${this.maxCandidates}
-    `;
+    const fallbackCandidates = await this.getFallbackCandidates(listing);
+    let vectorCandidates: ListingForMatching[] = [];
+    try {
+      vectorCandidates = await this.prisma.$queryRaw<ListingForMatching[]>`
+        SELECT l.*, (1 - (l.embedding <=> ${listing.embeddingVector}::vector)) AS "semanticScore"
+        FROM "Listing" l
+        WHERE l.id != ${listing.id}
+          AND l.category = ${listing.category}
+          AND l.status = 'ACTIVE'
+          AND l."userId" != ${listing.userId}
+          AND l."intentionTag"::text IN (${Prisma.join(compatibleIntents)})
+          AND l.embedding IS NOT NULL
+          ${cityFilter}
+        ORDER BY l.embedding <=> ${listing.embeddingVector}::vector
+        LIMIT ${this.maxCandidates}
+      `;
+    } catch (error) {
+      this.logger.warn(`Vector candidate lookup failed; using local matching. ${this.errorMessage(error)}`);
+    }
 
-    return candidates.filter((candidate) => {
+    const candidatesById = new Map<string, ListingForMatching>(
+      fallbackCandidates.map((candidate) => [candidate.id, candidate]),
+    );
+    vectorCandidates.forEach((candidate) => candidatesById.set(candidate.id, candidate));
+
+    return [...candidatesById.values()].filter((candidate) => {
       if (!this.areIntentsCompatible(listing, candidate)) return false;
       if (!this.arePricesCompatible(listing, candidate)) return false;
       return true;
-    });
+    }).slice(0, this.maxCandidates);
   }
 
   private async getFallbackCandidates(listing: Listing) {
@@ -371,26 +368,45 @@ export class MatchingService {
     const conditionScore = listing.condition === candidate.condition ? 1 : 0.6;
     const intentScore = this.scoreIntent(listing, candidate);
 
-    const attributeScore = Math.min(
+    if (attribute.breakdown.mode === 'text_fallback') {
+      const pairScore = Math.max(attribute.score, semantic);
+      const score = Math.min(1, pairScore * 0.55 + cityScore * 0.25 + intentScore * 0.2);
+      return {
+        listing: candidate,
+        score: this.round(score),
+        attributeScore: this.round(pairScore),
+        semanticScore: this.round(semantic),
+        breakdown: {
+          attribute: attribute.breakdown,
+          cityScore,
+          intentScore,
+          weights: { pair: 0.55, city: 0.25, intent: 0.2 },
+        },
+      };
+    }
+
+    const compatibilityScore = Math.min(
       1,
-      attribute.score * 0.75 + cityScore * 0.1 + conditionScore * 0.05 + intentScore * 0.1,
+      attribute.score * this.attributeWeight + semantic * this.semanticWeight,
     );
-    const score = Math.min(
-      1,
-      attributeScore * this.attributeWeight + semantic * this.semanticWeight,
-    );
+    const score = Math.min(1, compatibilityScore * 0.65 + cityScore * 0.25 + intentScore * 0.1);
 
     return {
       listing: candidate,
       score: this.round(score),
-      attributeScore: this.round(attributeScore),
+      attributeScore: this.round(attribute.score),
       semanticScore: this.round(semantic),
       breakdown: {
         attribute: attribute.breakdown,
         cityScore,
         conditionScore,
         intentScore,
-        weights: { attribute: this.attributeWeight, semantic: this.semanticWeight },
+        weights: {
+          compatibility: 0.65,
+          city: 0.25,
+          intent: 0.1,
+          compatibilityMix: { attribute: this.attributeWeight, semantic: this.semanticWeight },
+        },
       },
     };
   }
@@ -499,7 +515,11 @@ export class MatchingService {
 
     const intersection = [...leftTokens].filter((token) => rightTokens.has(token)).length;
     const union = new Set([...leftTokens, ...rightTokens]).size;
-    return union === 0 ? 0 : intersection / union;
+    const smallerSet = Math.min(leftTokens.size, rightTokens.size);
+    if (union === 0 || smallerSet === 0) return 0;
+    const jaccard = intersection / union;
+    const containment = intersection / smallerSet;
+    return Math.max(jaccard, containment * 0.85);
   }
 
   private scoreCity(a: Listing, b: Listing) {
@@ -573,22 +593,26 @@ export class MatchingService {
 
   private async notifyMatchOwners(matchId: string, listing: Listing, candidate: Listing, score: number) {
     const percent = Math.round(score * 100);
-    await Promise.all([
-      this.notificationsService.createNotification(
+    const notifications: Promise<unknown>[] = [];
+    if (!listing.isGuestListing) {
+      notifications.push(this.notificationsService.createNotification(
         listing.userId,
         'PAIR_MATCH',
         'Pair match found',
         `${candidate.title} looks like a ${percent}% match for ${listing.title}.`,
         `/marketplace/${candidate.id}`,
-      ),
-      this.notificationsService.createNotification(
+      ));
+    }
+    if (!candidate.isGuestListing) {
+      notifications.push(this.notificationsService.createNotification(
         candidate.userId,
         'PAIR_MATCH',
         'Pair match found',
         `${listing.title} looks like a ${percent}% match for ${candidate.title}.`,
         `/marketplace/${listing.id}`,
-      ),
-    ]);
+      ));
+    }
+    await Promise.all(notifications);
 
     await this.prisma.match.update({
       where: { id: matchId },
@@ -598,5 +622,9 @@ export class MatchingService {
 
   private round(value: number) {
     return Math.round(value * 1000) / 1000;
+  }
+
+  private errorMessage(error: unknown) {
+    return error instanceof Error ? error.message : 'Unknown error';
   }
 }

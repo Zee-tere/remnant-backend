@@ -23,6 +23,33 @@ const listingCardSelect = {
   updatedAt: true,
 } satisfies Prisma.ListingSelect;
 
+const listingSearchSelect = {
+  ...listingCardSelect,
+  description: true,
+  category: true,
+  pairingKeyword: true,
+  isGuestListing: true,
+} satisfies Prisma.ListingSelect;
+
+type SearchListing = Prisma.ListingGetPayload<{ select: typeof listingSearchSelect }>;
+
+const SEARCH_STOP_WORDS = new Set([
+  'a',
+  'an',
+  'and',
+  'for',
+  'from',
+  'in',
+  'is',
+  'it',
+  'of',
+  'on',
+  'or',
+  'the',
+  'to',
+  'with',
+]);
+
 @Injectable()
 export class ListingsService {
   private readonly logger = new Logger(ListingsService.name);
@@ -69,7 +96,7 @@ export class ListingsService {
       include: { user: { select: { id: true, name: true, avatarUrl: true, trustTier: true } } },
     });
 
-    this.scheduleListingMatching(listing.id, 'listing_created');
+    await this.runListingMatching(listing.id, 'listing_created');
     void this.notifyIndexNow(listing.slug);
     return this.withReadableImages(listing);
   }
@@ -105,7 +132,7 @@ export class ListingsService {
       include: { user: { select: { id: true, name: true, avatarUrl: true, trustTier: true } } },
     });
 
-    this.scheduleListingMatching(listing.id, 'guest_listing_created');
+    await this.runListingMatching(listing.id, 'guest_listing_created');
     void this.notifyIndexNow(listing.slug);
     return this.withReadableImages(listing);
   }
@@ -184,10 +211,7 @@ export class ListingsService {
     }
     if (filters?.search) {
       const search = filters.search.trim().slice(0, 100);
-      where.OR = [
-        { title: { contains: search, mode: 'insensitive' } },
-        { description: { contains: search, mode: 'insensitive' } },
-      ];
+      Object.assign(where, this.buildLexicalSearchWhere(search));
     }
 
     const [listings, total] = await Promise.all([
@@ -386,7 +410,7 @@ export class ListingsService {
       include: { user: { select: { id: true, name: true, avatarUrl: true, trustTier: true } } },
     });
 
-    this.scheduleListingMatching(updated.id, 'listing_updated');
+    await this.runListingMatching(updated.id, 'listing_updated');
     void this.notifyIndexNow(updated.slug);
     return this.withReadableImages(updated);
   }
@@ -457,57 +481,96 @@ export class ListingsService {
       throw new BadRequestException('Unknown listing intention');
     }
 
-    if (!query || !this.embeddingService.isConfigured()) {
+    if (!query) {
       const fallback = await this.findAll({
         category: params.category,
         intentionTag: params.intent,
         city: params.city,
-        search: query,
         limit,
       });
       return fallback.listings;
     }
 
-    const queryEmbedding = await this.embeddingService.generateEmbedding(query);
-    const vector = JSON.stringify(queryEmbedding);
-    const categoryFilter = params.category ? Prisma.sql`AND l.category = ${params.category}` : Prisma.empty;
-    const cityFilter = params.city ? Prisma.sql`AND l.city = ${params.city}` : Prisma.empty;
-    const intentFilter = params.intent
-      ? Prisma.sql`AND l."intentionTag"::text = ${params.intent}`
-      : Prisma.empty;
+    const baseWhere: Prisma.ListingWhereInput = {
+      status: 'ACTIVE',
+      ...(params.category ? { category: params.category } : {}),
+      ...(params.city ? { city: params.city } : {}),
+      ...(params.intent ? { intentionTag: params.intent as IntentionTag } : {}),
+    };
+    const candidateLimit = Math.min(Math.max(limit * 6, 60), 200);
+    const lexicalCandidates = await this.prisma.listing.findMany({
+      where: {
+        ...baseWhere,
+        ...this.buildLexicalSearchWhere(query),
+      },
+      orderBy: { createdAt: 'desc' },
+      take: candidateLimit,
+      select: listingSearchSelect,
+    });
 
-    const results = await this.prisma.$queryRaw<
-      Array<Record<string, unknown> & { images: string[]; relevance: number | string }>
-    >`
-      SELECT
-        l.id,
-        l.title,
-        l.slug,
-        l."intentionTag",
-        l.price,
-        l.status,
-        l.images,
-        l.city,
-        l."createdAt",
-        l."updatedAt",
-        (1 - (l.embedding <=> ${vector}::vector)) AS relevance
-      FROM "Listing" l
-      WHERE l.status = 'ACTIVE'
-        AND l.embedding IS NOT NULL
-        ${categoryFilter}
-        ${cityFilter}
-        ${intentFilter}
-      ORDER BY l.embedding <=> ${vector}::vector
-      LIMIT ${limit}
-    `;
+    const semanticRelevance = new Map<string, number>();
+    if (this.embeddingService.isConfigured()) {
+      try {
+        const queryEmbedding = await this.embeddingService.generateEmbedding(query);
+        const vector = JSON.stringify(queryEmbedding);
+        const categoryFilter = params.category ? Prisma.sql`AND l.category = ${params.category}` : Prisma.empty;
+        const cityFilter = params.city ? Prisma.sql`AND l.city = ${params.city}` : Prisma.empty;
+        const intentFilter = params.intent
+          ? Prisma.sql`AND l."intentionTag"::text = ${params.intent}`
+          : Prisma.empty;
+        const semanticRows = await this.prisma.$queryRaw<Array<{ id: string; relevance: number | string }>>`
+          SELECT l.id, (1 - (l.embedding <=> ${vector}::vector)) AS relevance
+          FROM "Listing" l
+          WHERE l.status = 'ACTIVE'
+            AND l.embedding IS NOT NULL
+            ${categoryFilter}
+            ${cityFilter}
+            ${intentFilter}
+          ORDER BY l.embedding <=> ${vector}::vector
+          LIMIT ${candidateLimit}
+        `;
 
-    const listings = results
-      .map((row) => {
-        const relevance = Number(row.relevance);
-        return { ...row, relevance };
-      })
-      .filter((row) => Number(row.relevance) > 0.5);
-    return Promise.all(listings.map((listing) => this.withReadableImages(listing, 1)));
+        for (const row of semanticRows) {
+          const relevance = Number(row.relevance);
+          if (Number.isFinite(relevance) && relevance >= 0.25) {
+            semanticRelevance.set(row.id, relevance);
+          }
+        }
+      } catch (error) {
+        this.logger.warn(`Semantic search failed; returning exact text matches instead. ${this.errorMessage(error)}`);
+      }
+    }
+
+    const candidatesById = new Map<string, SearchListing>(
+      lexicalCandidates.map((listing) => [listing.id, listing]),
+    );
+    const missingSemanticIds = [...semanticRelevance.keys()].filter((id) => !candidatesById.has(id));
+    if (missingSemanticIds.length > 0) {
+      const semanticCandidates = await this.prisma.listing.findMany({
+        where: { ...baseWhere, id: { in: missingSemanticIds } },
+        take: candidateLimit,
+        select: listingSearchSelect,
+      });
+      semanticCandidates.forEach((listing) => candidatesById.set(listing.id, listing));
+    }
+
+    const tokens = this.getSearchTokens(query);
+    const ranked = [...candidatesById.values()]
+      .map((listing) => ({
+        listing,
+        score: this.scoreSearchResult(listing, query, tokens, semanticRelevance.get(listing.id) ?? 0),
+      }))
+      .sort((left, right) =>
+        right.score - left.score || right.listing.createdAt.getTime() - left.listing.createdAt.getTime(),
+      )
+      .slice(0, limit);
+
+    return Promise.all(
+      ranked.map(async ({ listing, score }) => ({
+        ...(await this.withReadableImages(listing, 1)),
+        relevance: this.roundSearchScore(score),
+      })),
+    );
   }
 
   private async withReadableImages<T extends { images: string[] }>(listing: T, maxImages?: number): Promise<T> {
@@ -642,11 +705,78 @@ export class ListingsService {
     `;
   }
 
-  private scheduleListingMatching(listingId: string, reason: string) {
+  private getSearchTokens(query: string) {
+    return [...new Set(
+      query
+        .toLowerCase()
+        .replace(/[^a-z0-9\s]/g, ' ')
+        .split(/\s+/)
+        .filter((token) => token.length > 1 && !SEARCH_STOP_WORDS.has(token)),
+    )].slice(0, 12);
+  }
+
+  private buildLexicalSearchWhere(query: string): Prisma.ListingWhereInput {
+    const tokens = this.getSearchTokens(query);
+    const searchableFields = (term: string): Prisma.ListingWhereInput[] => [
+      { title: { contains: term, mode: 'insensitive' } },
+      { description: { contains: term, mode: 'insensitive' } },
+      { pairingKeyword: { contains: term, mode: 'insensitive' } },
+      { category: { contains: term, mode: 'insensitive' } },
+      { city: { contains: term, mode: 'insensitive' } },
+    ];
+
+    if (tokens.length === 0) {
+      return { OR: searchableFields(query.trim().slice(0, 100)) };
+    }
+
+    return {
+      AND: tokens.map((token) => ({ OR: searchableFields(token) })),
+    };
+  }
+
+  private scoreSearchResult(listing: SearchListing, query: string, tokens: string[], semanticScore: number) {
+    const phrase = query.trim().toLowerCase();
+    const title = listing.title.toLowerCase();
+    const description = listing.description.toLowerCase();
+    const pairingKeyword = listing.pairingKeyword?.toLowerCase() ?? '';
+    const category = listing.category.toLowerCase();
+    const city = listing.city?.toLowerCase() ?? '';
+    let score = Math.max(0, semanticScore) * 40;
+
+    if (title === phrase) score += 110;
+    else if (title.includes(phrase)) score += 70;
+    if (pairingKeyword.includes(phrase)) score += 60;
+    if (description.includes(phrase)) score += 35;
+    if (city === phrase) score += 55;
+    else if (city.includes(phrase)) score += 35;
+    if (category.includes(phrase)) score += 25;
+
+    for (const token of tokens) {
+      if (title.includes(token)) score += 16;
+      if (pairingKeyword.includes(token)) score += 14;
+      if (description.includes(token)) score += 5;
+      if (city.includes(token)) score += 12;
+      if (category.includes(token)) score += 8;
+    }
+
+    const mentionedState = NIGERIAN_STATES.find((state) => phrase.includes(state.toLowerCase()));
+    if (mentionedState && city === mentionedState.toLowerCase()) score += 50;
+    return score;
+  }
+
+  private roundSearchScore(score: number) {
+    return Math.round(Math.min(1, score / 100) * 1000) / 1000;
+  }
+
+  private errorMessage(error: unknown) {
+    return error instanceof Error ? error.message : 'Unknown error';
+  }
+
+  private async runListingMatching(listingId: string, reason: string) {
     try {
-      this.matchingService.scheduleMatchForListing(listingId, reason);
+      await this.matchingService.runMatchForListing(listingId, reason);
     } catch (error) {
-      this.logger.error(`Could not schedule matching for listing ${listingId}`, error);
+      this.logger.error(`Could not complete matching for listing ${listingId}`, error);
     }
   }
 }

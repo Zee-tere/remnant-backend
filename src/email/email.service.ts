@@ -35,6 +35,20 @@ export class EmailService {
     await this.sendEmail(to, subject, text, html);
   }
 
+  async sendPairMatch(to: string, title: string, body: string, matchUrl: string) {
+    const safeTitle = this.escapeHtml(title);
+    const safeBody = this.escapeHtml(body);
+    const safeUrl = this.escapeHtml(matchUrl);
+    const text = [title, '', body, '', `View the match: ${matchUrl}`].join('\n');
+    const html = `
+      <h2>${safeTitle}</h2>
+      <p>${safeBody}</p>
+      <p><a href="${safeUrl}">View this match on ${this.escapeHtml(this.appName)}</a></p>
+    `;
+
+    await this.sendEmail(to, `${this.appName}: ${title}`, text, html);
+  }
+
   private async sendEmail(to: string, subject: string, text: string, html: string) {
     if (!this.fromEmail) {
       if (this.isProduction) {
@@ -64,5 +78,14 @@ export class EmailService {
       this.logger.error(`Failed to send email to ${to}: ${message}`);
       throw new ServiceUnavailableException('Could not send email');
     }
+  }
+
+  private escapeHtml(value: string) {
+    return value
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
   }
 }

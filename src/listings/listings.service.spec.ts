@@ -42,7 +42,7 @@ describe('ListingsService', () => {
       providers: [
         ListingsService,
         { provide: PrismaService, useValue: prisma },
-        { provide: MatchingService, useValue: { scheduleMatchForListing: jest.fn() } },
+        { provide: MatchingService, useValue: { runMatchForListing: jest.fn().mockResolvedValue([]) } },
         { provide: EmbeddingService, useValue: { isConfigured: jest.fn().mockReturnValue(false) } },
         {
           provide: S3Service,
@@ -187,6 +187,46 @@ describe('ListingsService', () => {
           isGuestListing: true,
           guestContact: { email: 'seller@example.com' },
           user: { create: expect.objectContaining({ name: 'Guest' }) },
+        }),
+      }),
+    );
+    expect((service as any).matchingService.runMatchForListing).toHaveBeenCalledWith(
+      'guest-listing',
+      'guest_listing_created',
+    );
+  });
+
+  it('searches every meaningful word across title, description, pairing term, category, and state', async () => {
+    prisma.listing.findMany.mockResolvedValue([
+      {
+        id: 'listing-1',
+        title: 'Dangote cement paper bag',
+        description: 'Useful empty packaging for a craft project',
+        pairingKeyword: 'cement bag',
+        category: 'Tools & DIY',
+        intentionTag: 'SELL',
+        price: null,
+        status: 'ACTIVE',
+        images: [],
+        city: 'Lagos',
+        slug: 'dangote-cement-paper-bag',
+        isGuestListing: true,
+        createdAt: new Date('2026-07-20T10:00:00.000Z'),
+        updatedAt: new Date('2026-07-20T10:00:00.000Z'),
+      },
+    ]);
+
+    const result = await service.semanticSearch({ query: 'cement bag Lagos', limit: 12 });
+
+    expect(result).toHaveLength(1);
+    expect(result[0]).toEqual(expect.objectContaining({ id: 'listing-1' }));
+    expect(prisma.listing.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          status: 'ACTIVE',
+          AND: expect.arrayContaining([
+            expect.objectContaining({ OR: expect.any(Array) }),
+          ]),
         }),
       }),
     );
