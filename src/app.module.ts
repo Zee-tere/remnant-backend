@@ -17,6 +17,7 @@ import { ReviewsModule } from './reviews/reviews.module';
 import { AchievementsModule } from './achievements/achievements.module';
 import { AdminModule } from './admin/admin.module';
 import { ReportsModule } from './reports/reports.module';
+import { PairAlertsModule } from './pair-alerts/pair-alerts.module';
 import { validateEnvironment } from './config/env.validation';
 
 @Module({
@@ -49,6 +50,7 @@ import { validateEnvironment } from './config/env.validation';
     AchievementsModule,
     AdminModule,
     ReportsModule,
+    PairAlertsModule,
   ],
   controllers: [AppController],
   providers: [

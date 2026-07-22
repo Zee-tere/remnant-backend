@@ -1,20 +1,22 @@
 import { MatchingService } from './matching.service';
 
 describe('MatchingService', () => {
-  const config = {
-    get: jest.fn((key: string, fallback: string) => fallback),
-  };
-
+  const config = { get: jest.fn((_key: string, fallback: string) => fallback) };
   const baseListing = {
-    id: 'wanted-1',
-    userId: 'buyer-1',
-    title: 'Need right AirPod Pro 2',
-    description: 'Looking for the right side only',
-    category: 'electronics',
+    id: 'pot-1',
+    userId: 'owner-1',
+    title: '24 cm cooking pot without a lid',
+    description: 'The pot is usable but needs its matching lid',
+    category: 'Kitchen & Home Essentials',
     condition: 'GOOD',
-    intentionTag: 'WANTED',
-    pairingKeyword: 'AirPod Pro right',
-    compatibilityAttributes: { brand: 'Apple', model: 'AirPod Pro 2', side: 'right' },
+    intentionTag: 'SELL',
+    pairingKeyword: '24 cm cooking pot lid',
+    compatibilityAttributes: {
+      needsPair: true,
+      neededPiece: '24 cm cooking pot lid',
+      brand: 'HomeChef',
+      model: 'Classic 24',
+    },
     embeddingHash: null,
     embeddingId: null,
     embeddingTextHash: null,
@@ -24,36 +26,40 @@ describe('MatchingService', () => {
     city: 'Lagos',
     createdAt: new Date(),
     updatedAt: new Date(),
-    slug: 'need-right-airpod',
+    slug: 'cooking-pot-without-lid',
     viewCount: 0,
     expiresAt: null,
     lastMatchedAt: null,
+    isGuestListing: false,
+    guestContact: null,
   } as any;
 
   const candidate = {
     ...baseListing,
-    id: 'sell-1',
+    id: 'lid-1',
     userId: 'seller-1',
-    title: 'Apple AirPod Pro 2 right side',
-    intentionTag: 'SELL',
-    pairingKeyword: 'AirPod Pro right',
+    title: 'HomeChef 24 cm cooking pot lid',
+    description: 'A replacement lid for the Classic 24 pot',
+    pairingKeyword: null,
+    compatibilityAttributes: { brand: 'HomeChef', model: 'Classic 24', pieceType: 'lid' },
     price: { toString: () => '48000' },
+    slug: 'homechef-pot-lid',
   } as any;
 
-  const createService = (prisma: Record<string, unknown> = {}) =>
+  const createService = (prisma: Record<string, unknown> = {}, notifications = { createNotification: jest.fn().mockResolvedValue({}) }) =>
     new MatchingService(
       prisma as any,
       config as any,
-      { createNotification: jest.fn().mockResolvedValue({}) } as any,
+      notifications as any,
       {
         isConfigured: jest.fn().mockReturnValue(false),
-        buildListingText: jest.fn((listing) => [listing.title, listing.description].join(' ')),
+        buildListingText: jest.fn((listing) => [listing.title, listing.description, listing.pairingKeyword].filter(Boolean).join(' ')),
         hashText: jest.fn().mockReturnValue('hash'),
       } as any,
       { getReadableUrls: jest.fn() } as any,
     );
 
-  it('creates a high-confidence match and notifies both owners', async () => {
+  it('matches a public incomplete item with a listing for its missing piece', async () => {
     const prisma = {
       listing: {
         findMany: jest.fn().mockResolvedValue([candidate]),
@@ -66,39 +72,30 @@ describe('MatchingService', () => {
       },
     };
     const notifications = { createNotification: jest.fn().mockResolvedValue({}) };
-    const embedding = {
-      isConfigured: jest.fn().mockReturnValue(false),
-      buildListingText: jest.fn((listing) => [listing.title, listing.description].join(' ')),
-      hashText: jest.fn().mockReturnValue('hash'),
-    };
+    const service = createService(prisma, notifications);
 
-    const service = new MatchingService(
-      prisma as any,
-      config as any,
-      notifications as any,
-      embedding as any,
-      { getReadableUrls: jest.fn() } as any,
-    );
     const matches = await service.runMatchForListing(baseListing.id, 'test');
 
     expect(matches).toHaveLength(1);
     expect(prisma.match.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { canonicalKey: 'sell-1:wanted-1' },
-        create: expect.objectContaining({
-          listingAId: 'wanted-1',
-          listingBId: 'sell-1',
-          score: expect.any(Number),
-          attributeScore: expect.any(Number),
-          semanticScore: expect.any(Number),
-        }),
+        where: { canonicalKey: 'lid-1:pot-1' },
+        create: expect.objectContaining({ listingAId: 'pot-1', listingBId: 'lid-1' }),
       }),
     );
     expect(notifications.createNotification).toHaveBeenCalledTimes(2);
   });
 
+  it('ignores legacy wanted listings in the public matcher', async () => {
+    const legacy = { ...baseListing, intentionTag: 'WANTED' };
+    const prisma = { $queryRaw: jest.fn().mockResolvedValue([{ ...legacy, embeddingVector: null }]) };
+    const service = createService(prisma);
+
+    await expect(service.runMatchForListing(legacy.id, 'test')).resolves.toEqual([]);
+  });
+
   it('prevents users from updating matches they do not own', async () => {
-    const prisma = {
+    const service = createService({
       match: {
         findUnique: jest.fn().mockResolvedValue({
           id: 'match-1',
@@ -106,117 +103,45 @@ describe('MatchingService', () => {
           listingB: { userId: 'owner-b' },
         }),
       },
-    };
-
-    const service = new MatchingService(
-      prisma as any,
-      config as any,
-      { createNotification: jest.fn() } as any,
-      { isConfigured: jest.fn().mockReturnValue(false) } as any,
-      { getReadableUrls: jest.fn() } as any,
-    );
+    });
 
     await expect(service.updateMatchStatus('match-1', 'intruder', 'VIEWED')).rejects.toThrow('Not your match');
   });
 
-  it('maps public taxonomy labels to their category-specific attributes', () => {
+  it('maps public taxonomy labels to category-specific attributes', () => {
     const service = createService();
-    const wanted = {
+    const first = {
       ...baseListing,
       category: 'Clothing & Fashion',
-      compatibilityAttributes: {
-        brand: 'Remnant',
-        size: '10',
-        colorway: 'green',
-        gender: 'women',
-        era: '2020s',
-      },
+      compatibilityAttributes: { brand: 'Remnant', size: '10', colorway: 'green', gender: 'women', era: '2020s' },
     };
-    const offered = {
-      ...candidate,
-      category: 'Clothing & Fashion',
-      compatibilityAttributes: {
-        brand: 'Remnant',
-        size: '10',
-        colorway: 'green',
-        gender: 'women',
-        era: '2020s',
-      },
-    };
+    const offered = { ...candidate, ...first, id: 'fashion-2', userId: 'seller-2' };
 
-    const result = (service as any).scoreAttributes(wanted, offered);
+    const result = (service as any).scoreAttributes(first, offered);
 
     expect(result.score).toBe(1);
-    expect(result.breakdown.considered).toEqual(
-      expect.objectContaining({
-        colorway: expect.objectContaining({ score: 1 }),
-        gender: expect.objectContaining({ score: 1 }),
-        era: expect.objectContaining({ score: 1 }),
-      }),
-    );
+    expect(result.breakdown.considered).toEqual(expect.objectContaining({
+      colorway: expect.objectContaining({ score: 1 }),
+      gender: expect.objectContaining({ score: 1 }),
+      era: expect.objectContaining({ score: 1 }),
+    }));
   });
 
-  it('matches the requested side for wanted listings and complementary sides for pair listings', () => {
+  it('recognizes complementary sides from listing copy', () => {
     const service = createService();
-    const wantedRight = {
-      ...baseListing,
-      compatibilityAttributes: { brand: 'Apple', model: 'AirPod Pro 2', side: 'right' },
-    };
-    const offeredRight = {
-      ...candidate,
-      compatibilityAttributes: { brand: 'Apple', model: 'AirPod Pro 2', side: 'right' },
-    };
-    const offeredLeft = {
-      ...candidate,
-      compatibilityAttributes: { brand: 'Apple', model: 'AirPod Pro 2', side: 'left' },
-    };
-    const pairLeft = { ...offeredLeft, intentionTag: 'SELL' };
-    const pairRight = { ...offeredRight, intentionTag: 'SELL' };
+    const left = { ...candidate, title: 'Left AirPod Pro 2 earbud', description: 'Left earbud only', pairingKeyword: null, compatibilityAttributes: {} };
+    const right = { ...candidate, id: 'right-1', title: 'Right AirPod Pro 2 earbud', description: 'Right earbud only', pairingKeyword: null, compatibilityAttributes: {} };
 
-    expect((service as any).scoreAttributes(wantedRight, offeredRight).score).toBe(1);
-    expect((service as any).scoreAttributes(wantedRight, offeredLeft).score).toBeLessThan(1);
-    expect((service as any).scoreAttributes(pairLeft, pairRight).score).toBe(1);
+    expect((service as any).hasStructuredComplementarity(left, right)).toBe(true);
   });
 
-  it('infers a single side from listing copy when structured attributes are absent', () => {
+  it('gives same-state matches a decisive score advantage', () => {
     const service = createService();
-    const leftPiece = {
-      ...candidate,
-      title: 'Left AirPod Pro 2 earbud',
-      description: 'The left earbud only',
-      pairingKeyword: null,
-      compatibilityAttributes: {},
-    };
-    const rightPiece = {
-      ...candidate,
-      id: 'sell-2',
-      userId: 'seller-2',
-      title: 'Right AirPod Pro 2 earbud',
-      description: 'The right earbud only',
-      pairingKeyword: null,
-      compatibilityAttributes: {},
-    };
+    const nearby = { ...candidate, city: 'Lagos' };
+    const distant = { ...candidate, id: 'distant', city: 'Kano' };
 
-    expect((service as any).hasStructuredComplementarity(leftPiece, rightPiece)).toBe(true);
-  });
-
-  it('gives same-state text matches a decisive score advantage', () => {
-    const service = createService();
-    const wanted = {
-      ...baseListing,
-      compatibilityAttributes: {},
-      pairingKeyword: 'AirPod Pro right earbud',
-    };
-    const nearby = {
-      ...candidate,
-      compatibilityAttributes: {},
-      pairingKeyword: 'AirPod Pro right earbud',
-      city: 'Lagos',
-    };
-    const distant = { ...nearby, id: 'distant', city: 'Kano' };
-
-    const nearbyScore = (service as any).scoreCandidate(wanted, nearby).score;
-    const distantScore = (service as any).scoreCandidate(wanted, distant).score;
+    const nearbyScore = (service as any).scoreCandidate(baseListing, nearby).score;
+    const distantScore = (service as any).scoreCandidate(baseListing, distant).score;
 
     expect(nearbyScore).toBeGreaterThanOrEqual(0.72);
     expect(nearbyScore - distantScore).toBeGreaterThanOrEqual(0.2);

@@ -9,6 +9,7 @@ import { S3Service } from '../utils/s3.service';
 import { IntentionTag } from '@prisma/client';
 import { NIGERIAN_STATES } from '../config/nigeria-locations';
 import { LISTING_CATEGORIES } from '../config/listing-taxonomy';
+import { PairAlertsService } from '../pair-alerts/pair-alerts.service';
 
 const listingCardSelect = {
   id: true,
@@ -19,6 +20,8 @@ const listingCardSelect = {
   status: true,
   images: true,
   city: true,
+  pairingKeyword: true,
+  compatibilityAttributes: true,
   createdAt: true,
   updatedAt: true,
 } satisfies Prisma.ListingSelect;
@@ -59,6 +62,7 @@ export class ListingsService {
     private matchingService: MatchingService,
     private embeddingService: EmbeddingService,
     private s3Service: S3Service,
+    private pairAlertsService: PairAlertsService,
   ) {}
 
   private generateSlug(title: string): string {
@@ -73,6 +77,7 @@ export class ListingsService {
   }
 
   async create(userId: string, dto: CreateListingDto) {
+    this.assertPublicListingIntent(dto.intentionTag);
     this.assertManagedImages(dto.images);
     const slug = this.generateSlug(dto.title);
 
@@ -102,6 +107,7 @@ export class ListingsService {
   }
 
   async createGuest(dto: CreateGuestListingDto) {
+    this.assertPublicListingIntent(dto.intentionTag);
     this.assertManagedImages(dto.images);
     const guestContact = this.normalizeGuestContact(dto.guestContact);
     const slug = this.generateSlug(dto.title);
@@ -189,6 +195,7 @@ export class ListingsService {
 
     const where: Prisma.ListingWhereInput = {
       status: 'ACTIVE',
+      intentionTag: { not: 'WANTED' },
     };
 
     if (filters?.category) {
@@ -201,6 +208,7 @@ export class ListingsService {
       if (!Object.values(IntentionTag).includes(filters.intentionTag as IntentionTag)) {
         throw new BadRequestException('Unknown listing intention');
       }
+      this.assertPublicListingIntent(filters.intentionTag as IntentionTag);
       where.intentionTag = filters.intentionTag as IntentionTag;
     }
     if (filters?.city) {
@@ -236,7 +244,7 @@ export class ListingsService {
 
   async getSitemapEntries() {
     const listings = await this.prisma.listing.findMany({
-      where: { status: 'ACTIVE' },
+      where: { status: 'ACTIVE', intentionTag: { not: 'WANTED' } },
       orderBy: { updatedAt: 'desc' },
       take: 50_000,
       select: {
@@ -255,8 +263,8 @@ export class ListingsService {
   }
 
   async findOne(id: string, trackView = true) {
-    const listing = await this.prisma.listing.findUnique({
-      where: { id },
+    const listing = await this.prisma.listing.findFirst({
+      where: { id, status: 'ACTIVE', intentionTag: { not: 'WANTED' } },
       include: {
         user: { select: { id: true, name: true, avatarUrl: true, city: true, trustTier: true } },
       },
@@ -274,8 +282,8 @@ export class ListingsService {
   }
 
   async findBySlug(slug: string, trackView = true) {
-    const listing = await this.prisma.listing.findUnique({
-      where: { slug },
+    const listing = await this.prisma.listing.findFirst({
+      where: { slug, status: 'ACTIVE', intentionTag: { not: 'WANTED' } },
       include: {
         user: { select: { id: true, name: true, avatarUrl: true, city: true, trustTier: true } },
       },
@@ -298,7 +306,7 @@ export class ListingsService {
     }
 
     const result = await this.prisma.listing.updateMany({
-      where: { id, status: 'ACTIVE' },
+      where: { id, status: 'ACTIVE', intentionTag: { not: 'WANTED' } },
       data: { viewCount: { increment: 1 } },
     });
     if (result.count === 0) throw new NotFoundException('Listing not found');
@@ -307,14 +315,16 @@ export class ListingsService {
 
   async findByUser(userId: string) {
     const listings = await this.prisma.listing.findMany({
-      where: { userId },
+      where: { userId, intentionTag: { not: 'WANTED' } },
       orderBy: { createdAt: 'desc' },
     });
     return Promise.all(listings.map((listing) => this.withReadableImages(listing)));
   }
 
   async findSimilar(id: string, requestedLimit?: number) {
-    const source = await this.prisma.listing.findUnique({ where: { id } });
+    const source = await this.prisma.listing.findFirst({
+      where: { id, status: 'ACTIVE', intentionTag: { not: 'WANTED' } },
+    });
     if (!source) throw new NotFoundException('Listing not found');
 
     const limit = Math.min(Math.max(Number(requestedLimit) || 12, 1), 24);
@@ -341,6 +351,7 @@ export class ListingsService {
         FROM "Listing" candidate
         JOIN "Listing" source ON source.id = ${id}
         WHERE candidate.status = 'ACTIVE'
+          AND candidate."intentionTag" <> 'WANTED'
           AND candidate.id <> source.id
         ORDER BY score DESC, candidate."createdAt" DESC
         LIMIT ${limit}
@@ -349,7 +360,7 @@ export class ListingsService {
     } catch (error) {
       this.logger.warn(`Vector ranking unavailable for listing ${id}; using text fallback.`);
       const candidates = await this.prisma.listing.findMany({
-        where: { status: 'ACTIVE', id: { not: id } },
+        where: { status: 'ACTIVE', intentionTag: { not: 'WANTED' }, id: { not: id } },
         orderBy: { createdAt: 'desc' },
         take: 100,
         select: {
@@ -376,7 +387,7 @@ export class ListingsService {
 
     if (rankedIds.length === 0) return [];
     const listings = await this.prisma.listing.findMany({
-      where: { id: { in: rankedIds }, status: 'ACTIVE' },
+      where: { id: { in: rankedIds }, status: 'ACTIVE', intentionTag: { not: 'WANTED' } },
       select: listingCardSelect,
     });
     const byId = new Map(listings.map((listing) => [listing.id, listing]));
@@ -385,6 +396,7 @@ export class ListingsService {
   }
 
   async update(id: string, userId: string, dto: UpdateListingDto) {
+    if (dto.intentionTag !== undefined) this.assertPublicListingIntent(dto.intentionTag);
     this.assertManagedImages(dto.images);
     const listing = await this.prisma.listing.findUnique({ where: { id } });
     if (!listing) throw new NotFoundException(`Listing not found`);
@@ -429,7 +441,9 @@ export class ListingsService {
   }
 
   async saveListing(userId: string, listingId: string) {
-    const listing = await this.prisma.listing.findUnique({ where: { id: listingId } });
+    const listing = await this.prisma.listing.findFirst({
+      where: { id: listingId, status: 'ACTIVE', intentionTag: { not: 'WANTED' } },
+    });
     if (!listing) throw new NotFoundException('Listing not found');
 
     return this.prisma.savedListing.upsert({
@@ -448,7 +462,10 @@ export class ListingsService {
 
   async getSavedListings(userId: string) {
     const saved = await this.prisma.savedListing.findMany({
-      where: { userId },
+      where: {
+        userId,
+        listing: { status: 'ACTIVE', intentionTag: { not: 'WANTED' } },
+      },
       include: {
         listing: {
           include: {
@@ -480,6 +497,7 @@ export class ListingsService {
     if (params.intent && !Object.values(IntentionTag).includes(params.intent as IntentionTag)) {
       throw new BadRequestException('Unknown listing intention');
     }
+    if (params.intent) this.assertPublicListingIntent(params.intent as IntentionTag);
 
     if (!query) {
       const fallback = await this.findAll({
@@ -495,7 +513,9 @@ export class ListingsService {
       status: 'ACTIVE',
       ...(params.category ? { category: params.category } : {}),
       ...(params.city ? { city: params.city } : {}),
-      ...(params.intent ? { intentionTag: params.intent as IntentionTag } : {}),
+      ...(params.intent
+        ? { intentionTag: params.intent as IntentionTag }
+        : { intentionTag: { not: 'WANTED' as IntentionTag } }),
     };
     const candidateLimit = Math.min(Math.max(limit * 6, 60), 200);
     const lexicalCandidates = await this.prisma.listing.findMany({
@@ -522,6 +542,7 @@ export class ListingsService {
           SELECT l.id, (1 - (l.embedding <=> ${vector}::vector)) AS relevance
           FROM "Listing" l
           WHERE l.status = 'ACTIVE'
+            AND l."intentionTag" <> 'WANTED'
             AND l.embedding IS NOT NULL
             ${categoryFilter}
             ${cityFilter}
@@ -773,10 +794,20 @@ export class ListingsService {
   }
 
   private async runListingMatching(listingId: string, reason: string) {
-    try {
-      await this.matchingService.runMatchForListing(listingId, reason);
-    } catch (error) {
-      this.logger.error(`Could not complete matching for listing ${listingId}`, error);
+    const results = await Promise.allSettled([
+      this.matchingService.runMatchForListing(listingId, reason),
+      this.pairAlertsService.runMatchForListing(listingId, reason),
+    ]);
+    results.forEach((result) => {
+      if (result.status === 'rejected') {
+        this.logger.error(`Could not complete matching for listing ${listingId}`, result.reason);
+      }
+    });
+  }
+
+  private assertPublicListingIntent(intent: IntentionTag) {
+    if (intent === 'WANTED') {
+      throw new BadRequestException('Pair alerts are private. Create this from your Pair Alerts page.');
     }
   }
 }

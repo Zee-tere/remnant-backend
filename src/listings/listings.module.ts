@@ -4,9 +4,10 @@ import { ListingsService } from './listings.service';
 import { AuthModule } from '../auth/auth.module';
 import { MatchingModule } from '../matching/matching.module';
 import { UploadModule } from '../upload/upload.module';
+import { PairAlertsModule } from '../pair-alerts/pair-alerts.module';
 
 @Module({
-  imports: [AuthModule, MatchingModule, UploadModule],
+  imports: [AuthModule, MatchingModule, UploadModule, PairAlertsModule],
   controllers: [ListingsController],
   providers: [ListingsService],
   exports: [ListingsService],

@@ -76,7 +76,6 @@ export class MatchingService {
   private readonly attributeWeight: number;
   private readonly semanticWeight: number;
   private readonly maxCandidates: number;
-  private readonly priceTolerancePercent: number;
   private readonly requireCityMatch: boolean;
 
   constructor(
@@ -90,13 +89,12 @@ export class MatchingService {
     this.attributeWeight = parseFloat(this.configService.get<string>('MATCH_ATTRIBUTE_WEIGHT', '0.65'));
     this.semanticWeight = parseFloat(this.configService.get<string>('MATCH_SEMANTIC_WEIGHT', '0.35'));
     this.maxCandidates = parseInt(this.configService.get<string>('MATCH_MAX_CANDIDATES', '200'), 10);
-    this.priceTolerancePercent = parseFloat(this.configService.get<string>('MATCH_PRICE_TOLERANCE_PERCENT', '25'));
     this.requireCityMatch = this.configService.get<string>('MATCH_REQUIRE_CITY', 'false') === 'true';
   }
 
   async runMatchForListing(listingId: string, reason = 'manual') {
     const listing = await this.findListingWithEmbedding(listingId);
-    if (!listing || listing.status !== 'ACTIVE') return [];
+    if (!listing || listing.status !== 'ACTIVE' || listing.intentionTag === 'WANTED') return [];
 
     const listingWithEmbedding = await this.ensureEmbedding(listing);
     const candidates = await this.getHardFilteredCandidates(listingWithEmbedding);
@@ -196,7 +194,7 @@ export class MatchingService {
 
   async runDailyBackfill() {
     const activeListings = await this.prisma.listing.findMany({
-      where: { status: 'ACTIVE' },
+      where: { status: 'ACTIVE', intentionTag: { not: 'WANTED' } },
       select: { id: true },
     });
 
@@ -304,7 +302,6 @@ export class MatchingService {
 
     return [...candidatesById.values()].filter((candidate) => {
       if (!this.areIntentsCompatible(listing, candidate)) return false;
-      if (!this.arePricesCompatible(listing, candidate)) return false;
       return true;
     }).slice(0, this.maxCandidates);
   }
@@ -314,6 +311,7 @@ export class MatchingService {
       id: { not: listing.id },
       category: listing.category,
       status: 'ACTIVE',
+      intentionTag: { not: 'WANTED' },
       userId: { not: listing.userId },
     };
 
@@ -329,36 +327,19 @@ export class MatchingService {
 
     return candidates.filter((candidate) => {
       if (!this.areIntentsCompatible(listing, candidate)) return false;
-      if (!this.arePricesCompatible(listing, candidate)) return false;
       return true;
     });
   }
 
   private getCompatibleIntents(intent: IntentionTag): IntentionTag[] {
-    if (intent === 'WANTED') return PROVIDER_INTENTS;
     if (intent === 'TRADE') return ['TRADE'];
-    return ['WANTED', 'TRADE', ...PROVIDER_INTENTS];
+    return ['TRADE', ...PROVIDER_INTENTS];
   }
 
   private areIntentsCompatible(a: Listing, b: Listing) {
-    if (a.intentionTag === 'WANTED') return PROVIDER_INTENTS.includes(b.intentionTag);
-    if (b.intentionTag === 'WANTED') return PROVIDER_INTENTS.includes(a.intentionTag);
     if (a.intentionTag === 'TRADE' && b.intentionTag === 'TRADE') return true;
 
     return this.hasStructuredComplementarity(a, b);
-  }
-
-  private arePricesCompatible(a: Listing, b: Listing) {
-    const desired = a.intentionTag === 'WANTED' ? a : b.intentionTag === 'WANTED' ? b : null;
-    const offered = desired?.id === a.id ? b : desired ? a : null;
-    if (!desired || !offered || !desired.price || !offered.price) return true;
-
-    const desiredPrice = Number(desired.price);
-    const offeredPrice = Number(offered.price);
-    if (!Number.isFinite(desiredPrice) || !Number.isFinite(offeredPrice)) return true;
-
-    const upperBound = desiredPrice * (1 + this.priceTolerancePercent / 100);
-    return offeredPrice <= upperBound;
   }
 
   private scoreCandidate(listing: ListingForMatching, candidate: ListingForMatching): ScoredCandidate {
@@ -455,8 +436,6 @@ export class MatchingService {
     rightIntent: IntentionTag,
   ) {
     if (key === 'side') {
-      const fulfillsWantedListing = leftIntent === 'WANTED' || rightIntent === 'WANTED';
-      if (fulfillsWantedListing) return left === right ? 1 : 0;
       if (COMPLEMENTARY_SIDES[left] === right) return 1;
       return left === right ? 0.2 : 0;
     }
@@ -528,7 +507,6 @@ export class MatchingService {
   }
 
   private scoreIntent(a: Listing, b: Listing) {
-    if (a.intentionTag === 'WANTED' || b.intentionTag === 'WANTED') return 1;
     if (a.intentionTag === 'TRADE' && b.intentionTag === 'TRADE') return 0.85;
     return this.hasStructuredComplementarity(a, b) ? 0.75 : 0;
   }
@@ -536,6 +514,8 @@ export class MatchingService {
   private hasStructuredComplementarity(a: Listing, b: Listing) {
     const attrsA = this.getCompatibilityAttributes(a);
     const attrsB = this.getCompatibilityAttributes(b);
+    if (attrsA.neededpiece && this.scoreSemanticText(attrsA.neededpiece, this.buildSearchText(b)) >= 0.45) return true;
+    if (attrsB.neededpiece && this.scoreSemanticText(attrsB.neededpiece, this.buildSearchText(a)) >= 0.45) return true;
     return Boolean(attrsA.side && attrsB.side && COMPLEMENTARY_SIDES[attrsA.side] === attrsB.side);
   }
 

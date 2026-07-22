@@ -58,15 +58,18 @@ export class UserService {
   }
 
   async getDashboardSummary(userId: string) {
-    const [listings, activeListings, unreadAlerts, pendingMatches, unreadMessages] = await Promise.all([
-      this.prisma.listing.count({ where: { userId } }),
-      this.prisma.listing.count({ where: { userId, status: 'ACTIVE' } }),
+    const [listings, activeListings, unreadAlerts, listingMatches, pairAlertMatches, unreadMessages] = await Promise.all([
+      this.prisma.listing.count({ where: { userId, intentionTag: { not: 'WANTED' } } }),
+      this.prisma.listing.count({ where: { userId, status: 'ACTIVE', intentionTag: { not: 'WANTED' } } }),
       this.prisma.notification.count({ where: { userId, isRead: false } }),
       this.prisma.match.count({
         where: {
           status: 'PENDING',
           OR: [{ listingA: { userId } }, { listingB: { userId } }],
         },
+      }),
+      this.prisma.pairAlertMatch.count({
+        where: { status: 'PENDING', pairAlert: { userId } },
       }),
       this.prisma.conversation.count({
         where: {
@@ -76,7 +79,13 @@ export class UserService {
       }),
     ]);
 
-    return { listings, activeListings, unreadAlerts, pendingMatches, unreadMessages };
+    return {
+      listings,
+      activeListings,
+      unreadAlerts,
+      pendingMatches: listingMatches + pairAlertMatches,
+      unreadMessages,
+    };
   }
 
   async getAchievements(userId: string) {

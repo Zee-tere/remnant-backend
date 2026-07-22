@@ -9,6 +9,7 @@ describe('UserService', () => {
       },
       notification: { count: jest.fn().mockResolvedValue(2) },
       match: { count: jest.fn().mockResolvedValue(1) },
+      pairAlertMatch: { count: jest.fn().mockResolvedValue(2) },
       conversation: { count: jest.fn().mockResolvedValue(2) },
     };
     const service = new UserService(prisma as unknown as PrismaService);
@@ -17,7 +18,7 @@ describe('UserService', () => {
       listings: 4,
       activeListings: 3,
       unreadAlerts: 2,
-      pendingMatches: 1,
+      pendingMatches: 3,
       unreadMessages: 2,
     });
     expect(prisma.conversation.count).toHaveBeenCalledWith({

@@ -58,6 +58,12 @@ enum MatchStatus {
   COMPLETED
 }
 
+enum PairAlertStatus {
+  ACTIVE
+  PAUSED
+  ARCHIVED
+}
+
 enum MessageType {
   TEXT
   IMAGE
@@ -125,6 +131,7 @@ model User {
   achievements          UserAchievement[]
   reports               Report[]
   savedListings         SavedListing[]
+  pairAlerts            PairAlert[]
 
   @@index([city])
 }
@@ -157,14 +164,54 @@ model Listing {
   createdAt               DateTime                     @default(now())
   updatedAt               DateTime                     @updatedAt
 
-  matchesAsA    Match[]        @relation("MatchA")
-  matchesAsB    Match[]        @relation("MatchB")
-  conversations Conversation[]
-  transactions  Transaction[]
-  savedBy       SavedListing[]
+  matchesAsA       Match[]          @relation("MatchA")
+  matchesAsB       Match[]          @relation("MatchB")
+  conversations    Conversation[]
+  transactions     Transaction[]
+  savedBy          SavedListing[]
+  pairAlertMatches PairAlertMatch[]
 
   @@index([status, createdAt])
   @@index([status, category, city, createdAt])
+}
+
+model PairAlert {
+  id                      String                       @id @default(uuid())
+  userId                  String
+  user                    User                         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  query                   String
+  description             String?
+  category                String
+  city                    String?
+  budget                  Decimal?                     @db.Decimal(12, 2)
+  compatibilityAttributes Json?
+  embedding               Unsupported("vector(1536)")?
+  embeddingHash           String?
+  status                  PairAlertStatus              @default(ACTIVE)
+  lastMatchedAt           DateTime?
+  createdAt               DateTime                     @default(now())
+  updatedAt               DateTime                     @updatedAt
+  matches                 PairAlertMatch[]
+
+  @@index([userId, status, createdAt])
+  @@index([status, category, city])
+}
+
+model PairAlertMatch {
+  id             String      @id @default(uuid())
+  pairAlertId    String
+  listingId      String
+  pairAlert      PairAlert   @relation(fields: [pairAlertId], references: [id], onDelete: Cascade)
+  listing        Listing     @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  score          Float
+  scoreBreakdown Json?
+  status         MatchStatus @default(PENDING)
+  notifiedAt     DateTime?
+  createdAt      DateTime    @default(now())
+
+  @@unique([pairAlertId, listingId])
+  @@index([pairAlertId, status, score])
+  @@index([listingId])
 }
 
 model SavedListing {

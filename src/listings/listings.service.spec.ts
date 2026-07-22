@@ -4,6 +4,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { MatchingService } from '../matching/matching.service';
 import { EmbeddingService } from '../matching/embedding.service';
 import { S3Service } from '../utils/s3.service';
+import { PairAlertsService } from '../pair-alerts/pair-alerts.service';
 
 describe('ListingsService', () => {
   let service: ListingsService;
@@ -44,6 +45,7 @@ describe('ListingsService', () => {
         { provide: PrismaService, useValue: prisma },
         { provide: MatchingService, useValue: { runMatchForListing: jest.fn().mockResolvedValue([]) } },
         { provide: EmbeddingService, useValue: { isConfigured: jest.fn().mockReturnValue(false) } },
+        { provide: PairAlertsService, useValue: { runMatchForListing: jest.fn().mockResolvedValue([]) } },
         {
           provide: S3Service,
           useValue: s3,
@@ -82,14 +84,14 @@ describe('ListingsService', () => {
     ]);
     expect(prisma.listing.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { status: 'ACTIVE' },
+        where: { status: 'ACTIVE', intentionTag: { not: 'WANTED' } },
         take: 50_000,
       }),
     );
   });
 
   it('does not inflate listing views for metadata and crawler reads', async () => {
-    prisma.listing.findUnique.mockResolvedValue({
+    prisma.listing.findFirst.mockResolvedValue({
       id: 'listing-1',
       images: [],
     });
@@ -134,7 +136,7 @@ describe('ListingsService', () => {
   });
 
   it('does not expose guest contact details in ordinary listing responses', async () => {
-    prisma.listing.findUnique.mockResolvedValue({
+    prisma.listing.findFirst.mockResolvedValue({
       id: 'guest-listing',
       images: [],
       isGuestListing: true,
@@ -239,7 +241,7 @@ describe('ListingsService', () => {
     prisma.listing.updateMany.mockResolvedValue({ count: 1 });
     await expect(service.trackView('listing-1', 'Mozilla/5.0')).resolves.toEqual({ tracked: true });
     expect(prisma.listing.updateMany).toHaveBeenCalledWith({
-      where: { id: 'listing-1', status: 'ACTIVE' },
+      where: { id: 'listing-1', status: 'ACTIVE', intentionTag: { not: 'WANTED' } },
       data: { viewCount: { increment: 1 } },
     });
   });
@@ -275,7 +277,7 @@ describe('ListingsService', () => {
     };
     const candidates = [sameDescription, sameIntentAndDescription, sameCity];
 
-    prisma.listing.findUnique.mockResolvedValue(source);
+    prisma.listing.findFirst.mockResolvedValue(source);
     prisma.$queryRaw.mockRejectedValue(new Error('vector extension unavailable'));
     prisma.listing.findMany
       .mockResolvedValueOnce(candidates)
