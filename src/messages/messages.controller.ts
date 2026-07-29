@@ -4,6 +4,7 @@ import {
   Get,
   Headers,
   Param,
+  ParseUUIDPipe,
   Patch,
   Post,
   Req,
@@ -31,7 +32,7 @@ export class MessagesController {
 
   @Get('guest/:id')
   getGuestConversation(
-    @Param('id') id: string,
+    @Param('id', ParseUUIDPipe) id: string,
     @Headers('x-guest-token') token?: string,
   ) {
     return this.messagesService.getGuestConversation(id, token);
@@ -40,7 +41,7 @@ export class MessagesController {
   @Post('guest/:id/messages')
   @Throttle({ default: { limit: 12, ttl: 60000 } })
   createGuestMessage(
-    @Param('id') id: string,
+    @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: CreateMessageDto,
     @Headers('x-guest-token') token?: string,
   ) {
@@ -54,7 +55,7 @@ export class MessagesController {
 
   @Patch('guest/:id/read')
   markGuestConversationRead(
-    @Param('id') id: string,
+    @Param('id', ParseUUIDPipe) id: string,
     @Headers('x-guest-token') token?: string,
   ) {
     return this.messagesService.markGuestConversationRead(id, token);
@@ -79,15 +80,19 @@ export class MessagesController {
 
   @Get(':id/messages')
   @UseGuards(JwtAuthGuard)
-  async getMessages(@Param('id') id: string, @Req() req: Request) {
+  async getMessages(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Req() req: Request,
+  ) {
     const user = req.user as { sub: string };
     return this.messagesService.getMessages(id, user.sub);
   }
 
   @Post(':id/messages')
   @UseGuards(JwtAuthGuard)
+  @Throttle({ default: { limit: 30, ttl: 60000 } })
   async createMessage(
-    @Param('id') id: string,
+    @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: CreateMessageDto,
     @Req() req: Request,
   ) {
@@ -102,7 +107,10 @@ export class MessagesController {
 
   @Patch(':id/read')
   @UseGuards(JwtAuthGuard)
-  async markAsRead(@Param('id') id: string, @Req() req: Request) {
+  async markAsRead(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Req() req: Request,
+  ) {
     const user = req.user as { sub: string };
     return this.messagesService.markAsRead(id, user.sub);
   }

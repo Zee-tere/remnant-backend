@@ -42,7 +42,13 @@ export class PairAlertsService {
       },
     });
 
-    await this.runMatchForAlert(alert.id, 'alert_created');
+    try {
+      await this.runMatchForAlert(alert.id, 'alert_created');
+    } catch (error) {
+      this.logger.error(
+        `Pair alert ${alert.id} was saved, but its first matching pass failed: ${this.errorMessage(error)}`,
+      );
+    }
     return this.findOneForUser(alert.id, userId);
   }
 
@@ -100,7 +106,15 @@ export class PairAlertsService {
     }
 
     const alert = await this.prisma.pairAlert.update({ where: { id }, data });
-    if (alert.status === 'ACTIVE') await this.runMatchForAlert(id, 'alert_updated');
+    if (alert.status === 'ACTIVE') {
+      try {
+        await this.runMatchForAlert(id, 'alert_updated');
+      } catch (error) {
+        this.logger.error(
+          `Pair alert ${alert.id} was updated, but its matching pass failed: ${this.errorMessage(error)}`,
+        );
+      }
+    }
     return this.findOneForUser(id, userId);
   }
 
@@ -312,7 +326,9 @@ export class PairAlertsService {
       );
     } catch (error) {
       await this.prisma.pairAlertMatch.update({ where: { id: match.id }, data: { notifiedAt: null } });
-      throw error;
+      this.logger.warn(
+        `Match ${match.id} was saved, but its notification failed: ${this.errorMessage(error)}`,
+      );
     }
     return match;
   }
@@ -366,5 +382,9 @@ export class PairAlertsService {
 
   private round(value: number) {
     return Math.round(value * 1000) / 1000;
+  }
+
+  private errorMessage(error: unknown) {
+    return error instanceof Error ? error.message : 'Unknown error';
   }
 }

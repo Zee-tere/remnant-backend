@@ -26,6 +26,11 @@ jobs:
         run: npm run build
       - name: Generate Prisma Client
         run: npx prisma generate
+      - name: Apply database migrations
+        run: npx prisma migrate deploy
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DIRECT_URL: ${{ secrets.DIRECT_URL }}
       - name: Prune dev dependencies
         run: npm prune --omit=dev
       - name: Create deployment package

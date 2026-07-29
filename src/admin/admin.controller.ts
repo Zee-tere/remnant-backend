@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, ParseUUIDPipe, Patch, Post, Query, Req, UseGuards } from '@nestjs/common';
 import { Request } from 'express';
 import { AdminGuard } from './admin.guard';
 import { AdminService } from './admin.service';
@@ -31,12 +31,12 @@ export class AdminController {
   }
 
   @Patch('users/:id')
-  updateUser(@Param('id') id: string, @Body() data: AdminUpdateUserDto, @Req() req: Request) {
+  updateUser(@Param('id', ParseUUIDPipe) id: string, @Body() data: AdminUpdateUserDto, @Req() req: Request) {
     return this.adminService.updateUser(id, data, (req.user as { userId: string }).userId);
   }
 
   @Post('users/:id/message')
-  messageUser(@Param('id') id: string, @Body() dto: AdminMessageUserDto) {
+  messageUser(@Param('id', ParseUUIDPipe) id: string, @Body() dto: AdminMessageUserDto) {
     return this.adminService.messageUser(id, dto.message);
   }
 
@@ -61,12 +61,12 @@ export class AdminController {
   }
 
   @Patch('listings/:id')
-  updateListingStatus(@Param('id') id: string, @Body() dto: AdminListingStatusDto) {
+  updateListingStatus(@Param('id', ParseUUIDPipe) id: string, @Body() dto: AdminListingStatusDto) {
     return this.adminService.updateListingStatus(id, dto.status);
   }
 
   @Delete('listings/:id')
-  removeListing(@Param('id') id: string) {
+  removeListing(@Param('id', ParseUUIDPipe) id: string) {
     return this.adminService.removeListing(id);
   }
 
@@ -79,12 +79,12 @@ export class AdminController {
   }
 
   @Post('transactions/:id/refund')
-  refundTransaction(@Param('id') id: string, @Req() req: Request) {
+  refundTransaction(@Param('id', ParseUUIDPipe) id: string, @Req() req: Request) {
     return this.adminService.refundTransaction(id, req.user!.userId);
   }
 
   @Patch('transactions/:id')
-  overrideTransactionStatus(@Param('id') id: string, @Body() dto: AdminTransactionStatusDto) {
+  overrideTransactionStatus(@Param('id', ParseUUIDPipe) id: string, @Body() dto: AdminTransactionStatusDto) {
     return this.adminService.overrideTransactionStatus(id, dto.status);
   }
 
@@ -98,12 +98,12 @@ export class AdminController {
   }
 
   @Post('reports/:id/action')
-  actOnReport(@Param('id') id: string, @Body() dto: AdminReportActionDto) {
+  actOnReport(@Param('id', ParseUUIDPipe) id: string, @Body() dto: AdminReportActionDto) {
     return this.adminService.actOnReport(id, dto);
   }
 
   @Patch('reports/:id')
-  resolveReport(@Param('id') id: string, @Body() dto: ResolveReportDto) {
+  resolveReport(@Param('id', ParseUUIDPipe) id: string, @Body() dto: ResolveReportDto) {
     return this.adminService.resolveReport(id, dto.resolution);
   }
 }

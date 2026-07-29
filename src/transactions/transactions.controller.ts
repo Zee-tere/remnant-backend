@@ -5,12 +5,14 @@ import {
   Get,
   Headers,
   Param,
+  ParseUUIDPipe,
   Patch,
   Post,
   RawBodyRequest,
   Req,
   UseGuards,
 } from '@nestjs/common';
+import { timingSafeEqual } from 'crypto';
 import { ConfigService } from '@nestjs/config';
 import { Throttle } from '@nestjs/throttler';
 import { Request } from 'express';
@@ -22,6 +24,16 @@ import {
 } from './transactions.dto';
 import { PaystackService } from './paystack.service';
 import { TransactionsService } from './transactions.service';
+
+function secretsMatch(received: string | undefined, expected: string | undefined) {
+  if (!received || !expected) return false;
+  const receivedBuffer = Buffer.from(received);
+  const expectedBuffer = Buffer.from(expected);
+  return (
+    receivedBuffer.length === expectedBuffer.length &&
+    timingSafeEqual(receivedBuffer, expectedBuffer)
+  );
+}
 
 @Controller('transactions')
 export class TransactionsController {
@@ -44,7 +56,7 @@ export class TransactionsController {
 
   @Get('guest/:id')
   getGuestTransaction(
-    @Param('id') id: string,
+    @Param('id', ParseUUIDPipe) id: string,
     @Headers('x-guest-token') token?: string,
   ) {
     return this.transactionsService.getGuestTransaction(id, token);
@@ -53,7 +65,7 @@ export class TransactionsController {
   @Patch('guest/:id/confirm')
   @Throttle({ default: { limit: 10, ttl: 60000 } })
   confirmGuestReceipt(
-    @Param('id') id: string,
+    @Param('id', ParseUUIDPipe) id: string,
     @Headers('x-guest-token') token?: string,
   ) {
     return this.transactionsService.confirmGuestReceipt(id, token);
@@ -62,7 +74,7 @@ export class TransactionsController {
   @Post('guest/:id/dispute')
   @Throttle({ default: { limit: 5, ttl: 60000 } })
   disputeGuestTransaction(
-    @Param('id') id: string,
+    @Param('id', ParseUUIDPipe) id: string,
     @Headers('x-guest-token') token?: string,
   ) {
     return this.transactionsService.disputeGuestTransaction(id, token);
@@ -118,7 +130,7 @@ export class TransactionsController {
     const expectedSecret = this.configService.get<string>(
       'ESCROW_WEBHOOK_SECRET',
     );
-    if (expectedSecret && webhookSecret !== expectedSecret) {
+    if (!secretsMatch(webhookSecret, expectedSecret)) {
       throw new ForbiddenException('Invalid webhook secret');
     }
     return this.transactionsService.handleEscrowWebhook(body);
@@ -126,7 +138,10 @@ export class TransactionsController {
 
   @Get(':id')
   @UseGuards(JwtAuthGuard)
-  async getTransaction(@Param('id') id: string, @Req() req: Request) {
+  async getTransaction(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Req() req: Request,
+  ) {
     const user = req.user as { sub: string };
     return this.transactionsService.getTransaction(id, user.sub);
   }
@@ -134,7 +149,7 @@ export class TransactionsController {
   @Patch(':id/ship')
   @UseGuards(JwtAuthGuard)
   async markShipped(
-    @Param('id') id: string,
+    @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: MarkShippedDto,
     @Req() req: Request,
   ) {
@@ -144,21 +159,30 @@ export class TransactionsController {
 
   @Post(':id/stub-fund')
   @UseGuards(JwtAuthGuard)
-  async fundStubTransaction(@Param('id') id: string, @Req() req: Request) {
+  async fundStubTransaction(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Req() req: Request,
+  ) {
     const user = req.user as { sub: string };
     return this.transactionsService.fundStubTransaction(id, user.sub);
   }
 
   @Patch(':id/confirm')
   @UseGuards(JwtAuthGuard)
-  async confirmReceipt(@Param('id') id: string, @Req() req: Request) {
+  async confirmReceipt(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Req() req: Request,
+  ) {
     const user = req.user as { sub: string };
     return this.transactionsService.confirmReceipt(id, user.sub);
   }
 
   @Post(':id/dispute')
   @UseGuards(JwtAuthGuard)
-  async dispute(@Param('id') id: string, @Req() req: Request) {
+  async dispute(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Req() req: Request,
+  ) {
     const user = req.user as { sub: string };
     return this.transactionsService.disputeTransaction(id, user.sub);
   }

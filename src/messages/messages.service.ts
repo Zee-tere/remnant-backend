@@ -80,7 +80,7 @@ export class MessagesService {
       },
       include: {
         listing: {
-          select: { id: true, title: true, slug: true, images: true },
+          select: { id: true, title: true, slug: true },
         },
         buyer: { select: { id: true, name: true, avatarUrl: true } },
         seller: { select: { id: true, name: true, avatarUrl: true } },
@@ -98,17 +98,13 @@ export class MessagesService {
       },
       orderBy: { createdAt: 'desc' },
     });
-    return Promise.all(
-      conversations.map(async (conversation) => ({
-        ...conversation,
-        listing: {
-          ...conversation.listing,
-          images: await this.s3Service.getReadableUrls(
-            conversation.listing.images,
-          ),
-        },
-      })),
-    );
+    return conversations.sort((left, right) => {
+      const leftActivity =
+        left.messages[0]?.createdAt.getTime() ?? left.createdAt.getTime();
+      const rightActivity =
+        right.messages[0]?.createdAt.getTime() ?? right.createdAt.getTime();
+      return rightActivity - leftActivity;
+    });
   }
 
   async startConversation(buyerId: string, listingId: string) {
