@@ -26,20 +26,36 @@ jobs:
         run: npm run build
       - name: Generate Prisma Client
         run: npx prisma generate
-      - name: Apply database migrations
-        run: npx prisma migrate deploy
-        env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          DIRECT_URL: ${{ secrets.DIRECT_URL }}
-      - name: Prune dev dependencies
-        run: npm prune --omit=dev
-      - name: Create deployment package
-        run: zip -r ../function.zip dist node_modules package.json package-lock.json prisma
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           aws-region: us-east-1
+      - name: Apply database migrations
+        env:
+          MIGRATION_DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          MIGRATION_DIRECT_URL: ${{ secrets.DIRECT_URL }}
+        run: |
+          DATABASE_URL="$MIGRATION_DATABASE_URL"
+          if [[ -z "$DATABASE_URL" ]]; then
+            DATABASE_URL="$(aws lambda get-function-configuration \
+              --function-name remnant-api \
+              --query 'Environment.Variables.DATABASE_URL' \
+              --output text)"
+          fi
+          if [[ -z "$DATABASE_URL" || "$DATABASE_URL" == "None" ]]; then
+            echo "::error::DATABASE_URL is unavailable in both GitHub secrets and the Lambda environment."
+            exit 1
+          fi
+          DIRECT_URL="${MIGRATION_DIRECT_URL:-$DATABASE_URL}"
+          echo "::add-mask::$DATABASE_URL"
+          echo "::add-mask::$DIRECT_URL"
+          export DATABASE_URL DIRECT_URL
+          npx prisma migrate deploy
+      - name: Prune dev dependencies
+        run: npm prune --omit=dev
+      - name: Create deployment package
+        run: zip -r ../function.zip dist node_modules package.json package-lock.json prisma
       - name: Upload to S3
         run: aws s3 cp ../function.zip s3://remnant-deployments-158128612346/remnant-api/function.zip
       - name: Update Lambda function
