@@ -150,7 +150,6 @@ model Listing {
   compatibilityAttributes Json?
   isGuestListing          Boolean                      @default(false)
   guestContact            Json?
-  guestManageTokenHash    String?
   embedding               Unsupported("vector(1536)")?
   embeddingHash           String?
   embeddingId             String?

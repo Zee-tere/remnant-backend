@@ -135,8 +135,10 @@ export class ListingsService {
         city: dto.city,
         images: dto.images || [],
         isGuestListing: true,
-        guestContact: guestContact as Prisma.InputJsonValue,
-        guestManageTokenHash,
+        guestContact: {
+          ...guestContact,
+          manageTokenHash: guestManageTokenHash,
+        } as Prisma.InputJsonValue,
       },
       include: { user: { select: { id: true, name: true, avatarUrl: true, trustTier: true } } },
     });
@@ -632,7 +634,6 @@ export class ListingsService {
     return {
       ...listing,
       guestContact: undefined,
-      guestManageTokenHash: undefined,
       images: await this.s3Service.getReadableUrls(images ?? []),
     } as T;
   }
@@ -784,10 +785,17 @@ export class ListingsService {
         status: true,
         images: true,
         isGuestListing: true,
-        guestManageTokenHash: true,
+        guestContact: true,
       },
     });
-    if (!listing || !listing.isGuestListing || !listing.guestManageTokenHash) {
+    const guestContact = listing?.guestContact;
+    const guestManageTokenHash = guestContact
+      && typeof guestContact === 'object'
+      && !Array.isArray(guestContact)
+      && typeof (guestContact as Record<string, unknown>).manageTokenHash === 'string'
+        ? (guestContact as Record<string, string>).manageTokenHash
+        : undefined;
+    if (!listing || !listing.isGuestListing || !guestManageTokenHash) {
       throw new NotFoundException('Guest listing not found');
     }
     if (!token || !/^[a-f0-9]{64}$/i.test(token)) {
@@ -795,7 +803,7 @@ export class ListingsService {
     }
 
     const provided = Buffer.from(this.hashGuestManagementToken(token), 'hex');
-    const stored = Buffer.from(listing.guestManageTokenHash, 'hex');
+    const stored = Buffer.from(guestManageTokenHash, 'hex');
     if (provided.length !== stored.length || !timingSafeEqual(provided, stored)) {
       throw new ForbiddenException('This guest listing management key is invalid');
     }

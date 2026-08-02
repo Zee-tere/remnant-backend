@@ -187,7 +187,10 @@ describe('ListingsService', () => {
       expect.objectContaining({
         data: expect.objectContaining({
           isGuestListing: true,
-          guestContact: { email: 'seller@example.com' },
+          guestContact: expect.objectContaining({
+            email: 'seller@example.com',
+            manageTokenHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+          }),
           user: { create: expect.objectContaining({ name: 'Guest' }) },
         }),
       }),
