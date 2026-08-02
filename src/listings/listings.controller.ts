@@ -15,7 +15,7 @@ import {
 import { Throttle } from '@nestjs/throttler';
 import { ListingsService } from './listings.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
-import { CreateGuestListingDto, CreateListingDto, UpdateListingDto } from './listings.dto';
+import { CreateGuestListingDto, CreateListingDto, UpdateGuestListingStatusDto, UpdateListingDto } from './listings.dto';
 import { Request } from 'express';
 
 @Controller('listings')
@@ -112,6 +112,23 @@ export class ListingsController {
   @Throttle({ default: { limit: 20, ttl: 60000 } })
   async getGuestContact(@Param('id') id: string) {
     return this.listingsService.getGuestContact(id);
+  }
+
+  @Get(':id/guest-manage')
+  @Header('Cache-Control', 'no-store, max-age=0')
+  @Throttle({ default: { limit: 20, ttl: 60000 } })
+  async getGuestManagement(@Param('id') id: string, @Headers('x-guest-token') token?: string) {
+    return this.listingsService.getGuestManagement(id, token);
+  }
+
+  @Patch(':id/guest-status')
+  @Throttle({ default: { limit: 10, ttl: 60000 } })
+  async updateGuestStatus(
+    @Param('id') id: string,
+    @Headers('x-guest-token') token: string | undefined,
+    @Body() dto: UpdateGuestListingStatusDto,
+  ) {
+    return this.listingsService.updateGuestStatus(id, token, dto.status);
   }
 
   @Get(':id')

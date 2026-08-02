@@ -4,7 +4,7 @@ import { CreateGuestListingDto, CreateListingDto, GuestContactDto, UpdateListing
 import { Prisma } from '@prisma/client';
 import { MatchingService } from '../matching/matching.service';
 import { EmbeddingService } from '../matching/embedding.service';
-import { randomUUID } from 'crypto';
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'crypto';
 import { S3Service } from '../utils/s3.service';
 import { IntentionTag } from '@prisma/client';
 import { NIGERIAN_STATES } from '../config/nigeria-locations';
@@ -111,6 +111,8 @@ export class ListingsService {
     this.assertManagedImages(dto.images);
     const guestContact = this.normalizeGuestContact(dto.guestContact);
     const slug = this.generateSlug(dto.title);
+    const managementToken = randomBytes(32).toString('hex');
+    const guestManageTokenHash = this.hashGuestManagementToken(managementToken);
 
     const listing = await this.prisma.listing.create({
       data: {
@@ -134,13 +136,44 @@ export class ListingsService {
         images: dto.images || [],
         isGuestListing: true,
         guestContact: guestContact as Prisma.InputJsonValue,
+        guestManageTokenHash,
       },
       include: { user: { select: { id: true, name: true, avatarUrl: true, trustTier: true } } },
     });
 
     await this.runListingMatching(listing.id, 'guest_listing_created');
     void this.notifyIndexNow(listing.slug);
-    return this.withReadableImages(listing);
+    return {
+      ...(await this.withReadableImages(listing)),
+      managementToken,
+    };
+  }
+
+  async getGuestManagement(id: string, token?: string) {
+    const listing = await this.getVerifiedGuestListing(id, token);
+    return {
+      id: listing.id,
+      title: listing.title,
+      slug: listing.slug,
+      status: listing.status,
+      image: (await this.s3Service.getReadableUrls(listing.images.slice(0, 1)))[0] ?? null,
+    };
+  }
+
+  async updateGuestStatus(id: string, token: string | undefined, status: 'PAUSED' | 'COMPLETED') {
+    const listing = await this.getVerifiedGuestListing(id, token);
+    const updated = await this.prisma.listing.update({
+      where: { id: listing.id },
+      data: { status },
+      select: { id: true, title: true, slug: true, status: true },
+    });
+    void this.notifyIndexNow(listing.slug);
+    return {
+      ...updated,
+      message: status === 'COMPLETED'
+        ? 'Listing marked as sold and removed from the marketplace'
+        : 'Listing removed from the marketplace',
+    };
   }
 
   async getGuestContact(id: string) {
@@ -599,6 +632,7 @@ export class ListingsService {
     return {
       ...listing,
       guestContact: undefined,
+      guestManageTokenHash: undefined,
       images: await this.s3Service.getReadableUrls(images ?? []),
     } as T;
   }
@@ -734,6 +768,38 @@ export class ListingsService {
         .split(/\s+/)
         .filter((token) => token.length > 1 && !SEARCH_STOP_WORDS.has(token)),
     )].slice(0, 12);
+  }
+
+  private hashGuestManagementToken(token: string) {
+    return createHash('sha256').update(token).digest('hex');
+  }
+
+  private async getVerifiedGuestListing(id: string, token?: string) {
+    const listing = await this.prisma.listing.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        title: true,
+        slug: true,
+        status: true,
+        images: true,
+        isGuestListing: true,
+        guestManageTokenHash: true,
+      },
+    });
+    if (!listing || !listing.isGuestListing || !listing.guestManageTokenHash) {
+      throw new NotFoundException('Guest listing not found');
+    }
+    if (!token || !/^[a-f0-9]{64}$/i.test(token)) {
+      throw new ForbiddenException('A valid guest listing management key is required');
+    }
+
+    const provided = Buffer.from(this.hashGuestManagementToken(token), 'hex');
+    const stored = Buffer.from(listing.guestManageTokenHash, 'hex');
+    if (provided.length !== stored.length || !timingSafeEqual(provided, stored)) {
+      throw new ForbiddenException('This guest listing management key is invalid');
+    }
+    return listing;
   }
 
   private buildLexicalSearchWhere(query: string): Prisma.ListingWhereInput {

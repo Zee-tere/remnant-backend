@@ -1,5 +1,4 @@
 import {
-  IsEmail,
   IsIn,
   IsNotEmpty,
   IsString,
@@ -38,11 +37,13 @@ export class StartGuestConversationDto extends StartConversationDto {
   name: string;
 
   @Transform(({ value }) =>
-    typeof value === 'string' ? value.trim().toLowerCase() : value,
+    typeof value === 'string' ? value.trim() : value,
   )
-  @IsEmail()
-  @MaxLength(254)
-  email: string;
+  @IsString()
+  @IsNotEmpty()
+  @MinLength(5)
+  @MaxLength(180)
+  contact: string;
 
   @Transform(({ value }) =>
     typeof value === 'string' ? value.trim() : value,
@@ -50,5 +51,5 @@ export class StartGuestConversationDto extends StartConversationDto {
   @IsString()
   @IsNotEmpty()
   @MaxLength(2000)
-  message: string;
+  offer: string;
 }

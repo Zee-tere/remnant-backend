@@ -91,6 +91,12 @@ export class CreateGuestListingDto extends CreateListingDto {
   guestContact: GuestContactDto;
 }
 
+export class UpdateGuestListingStatusDto {
+  @IsString()
+  @IsIn(['PAUSED', 'COMPLETED'])
+  status: 'PAUSED' | 'COMPLETED';
+}
+
 export class UpdateListingDto {
   @IsOptional()
   @IsString()

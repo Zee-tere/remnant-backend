@@ -19,20 +19,21 @@ export class MessagesService {
   ) {}
 
   async startGuestConversation(dto: StartGuestConversationDto) {
-    this.guestAccessService.assertConfigured();
-    const guest = await this.guestAccessService.getOrCreateGuestUser(
+    const guest = await this.guestAccessService.getOrCreateGuestContactUser(
       dto.name,
-      dto.email,
+      dto.contact,
     );
     const conversation = await this.startConversation(guest.id, dto.listingId);
-    await this.createMessage(conversation.id, guest.id, dto.message);
+    const message = await this.createMessage(
+      conversation.id,
+      guest.id,
+      `Guest offer\nContact: ${dto.contact}\n\n${dto.offer}`,
+      'OFFER',
+    );
     return {
-      conversation,
-      guestToken: this.guestAccessService.issueToken(
-        'conversation',
-        conversation.id,
-        guest,
-      ),
+      delivered: true,
+      conversationId: conversation.id,
+      messageId: message.id,
     };
   }
 
@@ -82,7 +83,7 @@ export class MessagesService {
         listing: {
           select: { id: true, title: true, slug: true },
         },
-        buyer: { select: { id: true, name: true, avatarUrl: true } },
+        buyer: { select: { id: true, name: true, avatarUrl: true, email: true } },
         seller: { select: { id: true, name: true, avatarUrl: true } },
         messages: {
           orderBy: { createdAt: 'desc' },
@@ -98,7 +99,15 @@ export class MessagesService {
       },
       orderBy: { createdAt: 'desc' },
     });
-    return conversations.sort((left, right) => {
+    return conversations.map((conversation) => ({
+      ...conversation,
+      buyer: {
+        id: conversation.buyer.id,
+        name: conversation.buyer.name,
+        avatarUrl: conversation.buyer.avatarUrl,
+        isGuest: conversation.buyer.email.endsWith('@guest.remnant.local'),
+      },
+    })).sort((left, right) => {
       const leftActivity =
         left.messages[0]?.createdAt.getTime() ?? left.createdAt.getTime();
       const rightActivity =
@@ -136,12 +145,18 @@ export class MessagesService {
         listing: {
           select: { id: true, title: true, slug: true, images: true },
         },
-        buyer: { select: { id: true, name: true, avatarUrl: true } },
+        buyer: { select: { id: true, name: true, avatarUrl: true, email: true } },
         seller: { select: { id: true, name: true, avatarUrl: true } },
       },
     });
     return {
       ...conversation,
+      buyer: {
+        id: conversation.buyer.id,
+        name: conversation.buyer.name,
+        avatarUrl: conversation.buyer.avatarUrl,
+        isGuest: conversation.buyer.email.endsWith('@guest.remnant.local'),
+      },
       listing: {
         ...conversation.listing,
         images: await this.s3Service.getReadableUrls(

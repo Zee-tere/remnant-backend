@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { sign, verify, type JwtPayload } from 'jsonwebtoken';
+import { createHash } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
 
 export type GuestAccessScope = 'conversation' | 'transaction';
@@ -47,6 +48,34 @@ export class GuestAccessService {
         'An account already uses this email. Please log in to continue.',
       );
     }
+
+    if (existing) {
+      if (existing.name !== name.trim()) {
+        return this.prisma.user.update({
+          where: { id: existing.id },
+          data: { name: name.trim() },
+        });
+      }
+      return existing;
+    }
+
+    return this.prisma.user.create({
+      data: {
+        email,
+        name: name.trim(),
+        emailVerified: false,
+      },
+    });
+  }
+
+  async getOrCreateGuestContactUser(name: string, contactAddress: string) {
+    const normalizedContact = contactAddress.trim().toLowerCase();
+    const contactKey = createHash('sha256')
+      .update(normalizedContact)
+      .digest('hex')
+      .slice(0, 32);
+    const email = `guest-contact-${contactKey}@guest.remnant.local`;
+    const existing = await this.prisma.user.findUnique({ where: { email } });
 
     if (existing) {
       if (existing.name !== name.trim()) {
