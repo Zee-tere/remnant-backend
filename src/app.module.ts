@@ -35,7 +35,9 @@ import { validateEnvironment } from './config/env.validation';
       {
         name: 'auth',
         ttl: 60000,   // 1 minute window
-        limit: 10,    // 10 requests per window for auth routes
+        // This named bucket runs for every route. Auth endpoints override it
+        // with their stricter per-route limits in AuthController.
+        limit: 300,
       },
     ]),
     AuthModule,

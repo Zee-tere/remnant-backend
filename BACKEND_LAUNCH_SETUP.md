@@ -160,6 +160,22 @@ authorization code grant, PKCE, scopes `openid email profile`, callback
 `https://remnantmarket.co/auth/callback`, and logout URL
 `https://remnantmarket.co`.
 
+### Branded Google sign-in domain
+
+Google displays the Cognito host on its consent handoff. To show Remnant instead
+of the raw `*.amazoncognito.com` hostname, attach `auth.remnantmarket.co` as the
+user pool's custom domain using an ACM certificate in `us-east-1`, then point the
+`auth` DNS record at the CloudFront distribution Cognito provides. After the
+domain is active, set:
+
+```env
+COGNITO_HOSTED_UI_DOMAIN=https://auth.remnantmarket.co
+```
+
+Keep the existing callback and logout URLs on the Cognito app client. Do not
+change this environment value before Cognito reports the custom domain as active,
+or hosted sign-in will become unavailable.
+
 ## Production S3 Buckets
 
 The launch stack creates several buckets with different jobs:

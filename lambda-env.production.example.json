@@ -8,7 +8,7 @@
     "ALLOWED_ORIGINS": "https://remnantmarket.co,https://www.remnantmarket.co",
     "COGNITO_USER_POOL_ID": "us-east-1_beXjHeowG",
     "COGNITO_CLIENT_ID": "REPLACE_WITH_PUBLIC_COGNITO_APP_CLIENT_ID",
-    "COGNITO_HOSTED_UI_DOMAIN": "https://us-east-1bexjheowg.auth.us-east-1.amazoncognito.com",
+    "COGNITO_HOSTED_UI_DOMAIN": "https://auth.remnantmarket.co",
     "AWS_REGION": "us-east-1",
     "AWS_S3_BUCKET": "remnant-uploads-prod",
     "AWS_SES_REGION": "us-east-1",
