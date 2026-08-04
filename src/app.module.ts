@@ -19,6 +19,7 @@ import { AdminModule } from './admin/admin.module';
 import { ReportsModule } from './reports/reports.module';
 import { PairAlertsModule } from './pair-alerts/pair-alerts.module';
 import { validateEnvironment } from './config/env.validation';
+import { OutboxModule } from './outbox/outbox.module';
 
 @Module({
   imports: [
@@ -53,6 +54,7 @@ import { validateEnvironment } from './config/env.validation';
     AdminModule,
     ReportsModule,
     PairAlertsModule,
+    OutboxModule,
   ],
   controllers: [AppController],
   providers: [

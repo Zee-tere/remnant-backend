@@ -7,6 +7,7 @@ import {
   ParseUUIDPipe,
   Patch,
   Post,
+  Query,
   Req,
   UseGuards,
 } from '@nestjs/common';
@@ -15,6 +16,9 @@ import { Request } from 'express';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import {
   CreateMessageDto,
+  GetConversationsQueryDto,
+  GetMessagesQueryDto,
+  MarkConversationReadDto,
   StartConversationDto,
   StartGuestConversationDto,
 } from './messages.dto';
@@ -50,6 +54,7 @@ export class MessagesController {
       token,
       dto.content,
       dto.type,
+      dto.clientMessageId,
     );
   }
 
@@ -57,15 +62,19 @@ export class MessagesController {
   markGuestConversationRead(
     @Param('id', ParseUUIDPipe) id: string,
     @Headers('x-guest-token') token?: string,
+    @Body() dto: MarkConversationReadDto = {},
   ) {
-    return this.messagesService.markGuestConversationRead(id, token);
+    return this.messagesService.markGuestConversationRead(id, token, dto);
   }
 
   @Get()
   @UseGuards(JwtAuthGuard)
-  async getConversations(@Req() req: Request) {
+  async getConversations(
+    @Req() req: Request,
+    @Query() query: GetConversationsQueryDto,
+  ) {
     const user = req.user as { sub: string };
-    return this.messagesService.getConversations(user.sub);
+    return this.messagesService.getConversations(user.sub, query);
   }
 
   @Post()
@@ -83,9 +92,10 @@ export class MessagesController {
   async getMessages(
     @Param('id', ParseUUIDPipe) id: string,
     @Req() req: Request,
+    @Query() query: GetMessagesQueryDto,
   ) {
     const user = req.user as { sub: string };
-    return this.messagesService.getMessages(id, user.sub);
+    return this.messagesService.getMessages(id, user.sub, query);
   }
 
   @Post(':id/messages')
@@ -102,6 +112,7 @@ export class MessagesController {
       user.sub,
       dto.content,
       dto.type,
+      dto.clientMessageId,
     );
   }
 
@@ -110,8 +121,9 @@ export class MessagesController {
   async markAsRead(
     @Param('id', ParseUUIDPipe) id: string,
     @Req() req: Request,
+    @Body() dto: MarkConversationReadDto = {},
   ) {
     const user = req.user as { sub: string };
-    return this.messagesService.markAsRead(id, user.sub);
+    return this.messagesService.markAsRead(id, user.sub, dto);
   }
 }

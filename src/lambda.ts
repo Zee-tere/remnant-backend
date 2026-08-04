@@ -5,10 +5,14 @@ import helmet from 'helmet';
 import { configure as serverlessExpress } from '@vendia/serverless-express';
 import { AppModule } from './app.module';
 import { isAllowedOrigin, parseOriginList } from './config/origin';
+import { INestApplication } from '@nestjs/common';
+import { OutboxRelayService } from './outbox/outbox-relay.service';
 
 let server: Handler;
+let nestApp: INestApplication;
 
-async function bootstrap(): Promise<Handler> {
+async function bootstrapApp(): Promise<INestApplication> {
+  if (nestApp) return nestApp;
   const app = await NestFactory.create(AppModule, {
     logger: ['error', 'warn', 'log'],
     rawBody: true,
@@ -60,7 +64,12 @@ async function bootstrap(): Promise<Handler> {
   });
 
   await app.init();
+  nestApp = app;
+  return app;
+}
 
+async function bootstrap(): Promise<Handler> {
+  const app = await bootstrapApp();
   return serverlessExpress({
     app: app.getHttpAdapter().getInstance(),
   });
@@ -73,6 +82,14 @@ export const handler: Handler = async (
 ) => {
   if (event.source === 'aws.events' && event['detail-type'] === 'KeepWarm') {
     return { statusCode: 200, body: 'warm' };
+  }
+
+  if (
+    event.source === 'aws.events' &&
+    event['detail-type'] === 'RemnantOutboxRelay'
+  ) {
+    const app = await bootstrapApp();
+    return app.get(OutboxRelayService).relayPending();
   }
 
   context.callbackWaitsForEmptyEventLoop = false;

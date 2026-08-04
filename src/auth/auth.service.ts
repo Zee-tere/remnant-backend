@@ -66,12 +66,18 @@ export class AuthService {
   }
 
   getAuthConfig() {
+    const supabaseUrl = this.configService.get<string>('SUPABASE_URL') ?? null;
+    const supabasePublishableKey = this.configService.get<string>('SUPABASE_ANON_KEY') ?? null;
     return {
       userPoolId: this.configService.get<string>('COGNITO_USER_POOL_ID') ?? null,
       clientId: this.configService.get<string>('COGNITO_CLIENT_ID') ?? null,
       hostedUiDomain: this.configService.get<string>('COGNITO_HOSTED_UI_DOMAIN') ?? null,
       frontendUrl: this.configService.get<string>('FRONTEND_URL') ?? null,
-      supabaseUrl: this.configService.get<string>('SUPABASE_URL') ?? null,
+      supabaseUrl,
+      supabasePublishableKey,
+      messagingRealtimeEnabled:
+        this.configService.get<string>('MESSAGING_REALTIME_ENABLED', 'false') === 'true' &&
+        Boolean(supabaseUrl && supabasePublishableKey),
     };
   }
 
@@ -592,10 +598,12 @@ export class AuthService {
       { expiresIn: expiresIn as jwt.SignOptions['expiresIn'] },
     );
 
+    const decoded = jwt.decode(accessToken) as { exp?: number } | null;
     return {
       accessToken,
       tokenType: 'Bearer',
       expiresIn,
+      expiresAt: decoded?.exp ? decoded.exp * 1000 : Date.now() + 14 * 60_000,
     };
   }
 }
