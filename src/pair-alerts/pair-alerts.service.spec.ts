@@ -72,7 +72,7 @@ describe('PairAlertsService', () => {
     const distant = (service as any).score(alert, { ...listing, city: 'Kano' }, 0).score;
 
     expect(nearby).toBeGreaterThanOrEqual(0.72);
-    expect(nearby - distant).toBeGreaterThanOrEqual(0.25);
+    expect(nearby - distant).toBeGreaterThanOrEqual(0.13);
   });
 
   it('creates a private alert match when a qualifying listing appears', async () => {

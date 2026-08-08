@@ -1,5 +1,6 @@
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
+import { MatchingJobsService } from './matching/matching-jobs.service';
 import { MatchingService } from './matching/matching.service';
 
 export const handler = async () => {
@@ -9,7 +10,10 @@ export const handler = async () => {
 
   try {
     const matchingService = app.get(MatchingService);
-    return await matchingService.runDailyBackfill();
+    const matchingJobsService = app.get(MatchingJobsService);
+    const queued = await matchingService.runDailyBackfill();
+    const processed = await matchingJobsService.processPending(25);
+    return { ...queued, processed };
   } finally {
     await app.close();
   }

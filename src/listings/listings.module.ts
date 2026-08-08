@@ -5,9 +5,10 @@ import { AuthModule } from '../auth/auth.module';
 import { MatchingModule } from '../matching/matching.module';
 import { UploadModule } from '../upload/upload.module';
 import { PairAlertsModule } from '../pair-alerts/pair-alerts.module';
+import { MatchingJobsModule } from '../matching/matching-jobs.module';
 
 @Module({
-  imports: [AuthModule, MatchingModule, UploadModule, PairAlertsModule],
+  imports: [AuthModule, MatchingModule, UploadModule, PairAlertsModule, MatchingJobsModule],
   controllers: [ListingsController],
   providers: [ListingsService],
   exports: [ListingsService],

@@ -43,6 +43,7 @@ export class CreateListingDto {
 
   @IsOptional()
   @IsString()
+  @MaxLength(160)
   pairingKeyword?: string;
 
   @IsOptional()
@@ -51,6 +52,7 @@ export class CreateListingDto {
 
   @IsOptional()
   @IsString()
+  @Matches(/^\d+(?:\.\d{1,2})?$/, { message: 'Price must be a valid amount' })
   price?: string;
 
   @IsString()
@@ -100,10 +102,12 @@ export class UpdateGuestListingStatusDto {
 export class UpdateListingDto {
   @IsOptional()
   @IsString()
+  @MaxLength(120)
   title?: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(2000)
   description?: string;
 
   @IsOptional()
@@ -121,6 +125,7 @@ export class UpdateListingDto {
 
   @IsOptional()
   @IsString()
+  @MaxLength(160)
   pairingKeyword?: string;
 
   @IsOptional()
@@ -129,6 +134,7 @@ export class UpdateListingDto {
 
   @IsOptional()
   @IsString()
+  @Matches(/^\d+(?:\.\d{1,2})?$/, { message: 'Price must be a valid amount' })
   price?: string;
 
   @IsOptional()

@@ -8,8 +8,8 @@ This backend is now aligned with the zero-cost launch architecture from the rewr
 - Supabase Realtime for notifications, matches, transactions, and messages.
 - Cognito Hosted UI for email/password and Google auth.
 - Cognito access-token verification in NestJS via `aws-jwt-verify`.
-- OpenAI `text-embedding-3-small` embeddings stored in Supabase `pgvector`.
-- EventBridge-triggered match backfill via `dist/backfill.handler.handler`.
+- Indexed PostgreSQL retrieval first, with opt-in OpenAI embeddings stored in Supabase `pgvector`.
+- Durable, versioned matching jobs processed by EventBridge-triggered workers.
 - Escrow.com code retained but disabled at launch with `ESCROW_ENABLED=false`.
 
 Docker, EC2, ALB, ECS/Fargate, Aurora/RDS, and API Gateway WebSocket artifacts are intentionally removed from this launch path to avoid baseline monthly cost.
@@ -84,15 +84,47 @@ Enable Supabase Realtime and RLS policies for the relevant tables before launch.
 
 ## Matching And Search
 
-Listing create/update stores an OpenAI embedding when `OPENAI_API_KEY` is configured, then runs matching.
+Listing and pair-alert writes commit their data and a versioned `MatchingJob` in
+the same transaction. They do not wait for matching or OpenAI. A worker claims
+jobs with `FOR UPDATE SKIP LOCKED`, retries failures with backoff, and skips jobs
+whose entity version has already been superseded.
+
+Candidate retrieval runs in this order:
+
+1. recent candidates within the hard category/status/user filters;
+2. indexed PostgreSQL full-text and JSON compatibility candidates;
+3. only when fewer than the configured number of surface matches remain,
+   optional pgvector/OpenAI retrieval.
+
+Semantic search is enabled when an OpenAI key and an embedded listing corpus are
+available, but it only runs when indexed text retrieval returns fewer than the
+configured number of results. Background semantic matching remains off by
+default:
+
+```env
+SEMANTIC_SEARCH_ENABLED=true
+SEMANTIC_SEARCH_MIN_LEXICAL_RESULTS=6
+SEMANTIC_MATCHING_ENABLED=false
+SEMANTIC_MATCHING_MIN_SURFACE_RESULTS=3
+```
+
+Set either semantic flag to `false` to guarantee zero OpenAI calls on that path.
+The two paths can be enabled independently after monitoring recall and cost.
+
+Invoke the HTTP Lambda every minute with EventBridge detail type
+`RemnantMatchingWorker`, or schedule the separate backfill handler. The regular
+backfill only queues stale `(listingId, version)` records; workers perform the
+bounded matching passes.
 
 Search endpoint:
 
 ```http
-GET /listings/search?q=left%20airpod&category=electronics&city=Lagos&intent=WANTED
+GET /listings/search?q=left%20airpod&category=electronics&city=Lagos&intent=SELL
 ```
 
-If OpenAI is not configured in local development, matching falls back to the previous token similarity behavior so developers can still run the app.
+Marketplace feeds use deterministic `(createdAt, id)` cursors. UUID ordering is
+used only as a stable tie-breaker when timestamps are equal; it does not need to
+be sequential.
 
 ## Escrow
 
@@ -206,7 +238,19 @@ prefix:
 ```json
 {
   "Effect": "Allow",
-  "Action": ["s3:PutObject", "s3:GetObject", "s3:DeleteObject"],
+  "Action": [
+    "s3:PutObject",
+    "s3:GetObject",
+    "s3:DeleteObject",
+    "s3:GetObjectTagging",
+    "s3:PutObjectTagging"
+  ],
   "Resource": "arn:aws:s3:::remnant-uploads-prod/listings/*"
 }
 ```
+
+Uploads start with `remnant-status=temporary`, become `attached` after the
+listing transaction commits, and become `orphaned` when replaced. Apply
+`s3-listings-lifecycle.example.json` to expire unclaimed uploads after one day
+and replaced images after seven days. The URL-to-key validation supports both
+the bucket hostname and the configured CloudFront public base URL.

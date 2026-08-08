@@ -7,6 +7,7 @@ import { AppModule } from './app.module';
 import { isAllowedOrigin, parseOriginList } from './config/origin';
 import { INestApplication } from '@nestjs/common';
 import { OutboxRelayService } from './outbox/outbox-relay.service';
+import { MatchingJobsService } from './matching/matching-jobs.service';
 
 let server: Handler;
 let nestApp: INestApplication;
@@ -81,7 +82,9 @@ export const handler: Handler = async (
   callback: Callback,
 ) => {
   if (event.source === 'aws.events' && event['detail-type'] === 'KeepWarm') {
-    return { statusCode: 200, body: 'warm' };
+    const app = await bootstrapApp();
+    const matching = await app.get(MatchingJobsService).processPending(10);
+    return { statusCode: 200, body: JSON.stringify({ warm: true, matching }) };
   }
 
   if (
@@ -89,7 +92,19 @@ export const handler: Handler = async (
     event['detail-type'] === 'RemnantOutboxRelay'
   ) {
     const app = await bootstrapApp();
-    return app.get(OutboxRelayService).relayPending();
+    const [outbox, matching] = await Promise.all([
+      app.get(OutboxRelayService).relayPending(),
+      app.get(MatchingJobsService).processPending(10),
+    ]);
+    return { outbox, matching };
+  }
+
+  if (
+    event.source === 'aws.events' &&
+    event['detail-type'] === 'RemnantMatchingWorker'
+  ) {
+    const app = await bootstrapApp();
+    return app.get(MatchingJobsService).processPending(25);
   }
 
   context.callbackWaitsForEmptyEventLoop = false;

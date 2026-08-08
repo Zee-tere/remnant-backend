@@ -98,7 +98,7 @@ describe('MessagesService', () => {
     expect((prisma as any).message.updateMany).toBeUndefined();
   });
 
-  it('writes the message, notification and outbox event in one transaction', async () => {
+  it('writes the message and realtime outbox event without creating a persistent alert', async () => {
     const transaction = {
       conversation: {
         findUnique: jest.fn().mockResolvedValue(conversation),
@@ -124,9 +124,7 @@ describe('MessagesService', () => {
           createdAt: new Date('2026-08-04T12:00:00Z'),
         }),
       },
-      notification: {
-        create: jest.fn().mockResolvedValue({ id: 'notification-1' }),
-      },
+      notification: { create: jest.fn() },
       outboxEvent: { create: jest.fn().mockResolvedValue({}) },
     };
     const { service, prisma } = createService();
@@ -149,13 +147,12 @@ describe('MessagesService', () => {
         clientMessageId: message.clientMessageId,
       }),
     });
-    expect(transaction.notification.create).toHaveBeenCalledWith({
-      data: expect.objectContaining({ userId: 'seller-1' }),
-    });
+    expect(transaction.notification.create).not.toHaveBeenCalled();
     const outboxData = transaction.outboxEvent.create.mock.calls[0][0].data;
     expect(outboxData.id).toBe(outboxData.payload.eventId);
     expect(outboxData.messageId).toBe('message-5');
     expect(outboxData.clientMessageId).toBe(message.clientMessageId);
+    expect(outboxData.payload.notificationId).toBeUndefined();
   });
 
   it('returns the existing message for a repeated client message ID', async () => {

@@ -24,6 +24,7 @@ interface ScoredCandidate {
 }
 
 const PROVIDER_INTENTS: IntentionTag[] = ['SELL', 'DONATE', 'FIX', 'RECYCLE'];
+const MATCHING_ALGORITHM_VERSION = 'listing-pair-v2';
 const COMPLEMENTARY_SIDES: Record<string, string> = {
   left: 'right',
   right: 'left',
@@ -92,49 +93,92 @@ export class MatchingService {
     this.requireCityMatch = this.configService.get<string>('MATCH_REQUIRE_CITY', 'false') === 'true';
   }
 
-  async runMatchForListing(listingId: string, reason = 'manual') {
+  async runMatchForListing(listingId: string, reason = 'manual', expectedVersion?: number) {
     const listing = await this.findListingWithEmbedding(listingId);
     if (!listing || listing.status !== 'ACTIVE' || listing.intentionTag === 'WANTED') return [];
+    if (expectedVersion !== undefined && listing.version !== expectedVersion) return [];
 
-    const listingWithEmbedding = await this.ensureEmbedding(listing);
-    const candidates = await this.getHardFilteredCandidates(listingWithEmbedding);
-    const scored = candidates
+    let listingWithEmbedding: ListingForMatching = listing;
+    let candidates = await this.getFallbackCandidates(listing);
+    let scored = candidates
       .map((candidate) => this.scoreCandidate(listingWithEmbedding, candidate))
       .filter((candidate) => candidate.score >= this.threshold)
       .sort((a, b) => b.score - a.score)
       .slice(0, 25);
 
+    const minimumSurfaceMatches = Math.max(1, Number(process.env.SEMANTIC_MATCHING_MIN_SURFACE_RESULTS || 3));
+    if (
+      scored.length < minimumSurfaceMatches &&
+      process.env.SEMANTIC_MATCHING_ENABLED === 'true' &&
+      this.embeddingService.isConfigured()
+    ) {
+      listingWithEmbedding = await this.ensureEmbedding(listing);
+      candidates = await this.getHardFilteredCandidates(listingWithEmbedding);
+      scored = candidates
+        .map((candidate) => this.scoreCandidate(listingWithEmbedding, candidate))
+        .filter((candidate) => candidate.score >= this.threshold)
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 25);
+    }
+
     const created: Awaited<ReturnType<typeof this.prisma.match.upsert>>[] = [];
     for (const candidate of scored) {
       const canonicalKey = this.getCanonicalKey(listingWithEmbedding.id, candidate.listing.id);
+      const [listingA, listingB] = listingWithEmbedding.id.localeCompare(candidate.listing.id) <= 0
+        ? [listingWithEmbedding, candidate.listing]
+        : [candidate.listing, listingWithEmbedding];
       const match = await this.prisma.match.upsert({
         where: { canonicalKey },
         update: {
+          listingA: { connect: { id: listingA.id } },
+          listingB: { connect: { id: listingB.id } },
           score: candidate.score,
           attributeScore: candidate.attributeScore,
           semanticScore: candidate.semanticScore,
           scoreBreakdown: candidate.breakdown,
+          algorithmVersion: MATCHING_ALGORITHM_VERSION,
+          listingAVersion: listingA.version,
+          listingBVersion: listingB.version,
         },
         create: {
           canonicalKey,
-          listingAId: listingWithEmbedding.id,
-          listingBId: candidate.listing.id,
+          listingAId: listingA.id,
+          listingBId: listingB.id,
           score: candidate.score,
           attributeScore: candidate.attributeScore,
           semanticScore: candidate.semanticScore,
           scoreBreakdown: candidate.breakdown,
+          algorithmVersion: MATCHING_ALGORITHM_VERSION,
+          listingAVersion: listingA.version,
+          listingBVersion: listingB.version,
         },
       });
 
-      if (!match.notifiedAt) {
+      await this.prisma.matchParticipantState.createMany({
+        data: [
+          { matchId: match.id, userId: listingWithEmbedding.userId },
+          { matchId: match.id, userId: candidate.listing.userId },
+        ],
+        skipDuplicates: true,
+      });
+
+      const claim = await this.prisma.match.updateMany({
+        where: { id: match.id, notifiedAt: null },
+        data: { notifiedAt: new Date() },
+      });
+      if (claim.count === 1) {
         await this.notifyMatchOwners(match.id, listingWithEmbedding, candidate.listing, candidate.score);
       }
       created.push(match);
     }
 
-    await this.prisma.listing.update({
-      where: { id: listingWithEmbedding.id },
-      data: { lastMatchedAt: new Date() },
+    await this.prisma.listing.updateMany({
+      where: { id: listingWithEmbedding.id, version: listingWithEmbedding.version },
+      data: {
+        lastMatchedAt: new Date(),
+        matchedVersion: listingWithEmbedding.version,
+        matchingAlgorithmVersion: MATCHING_ALGORITHM_VERSION,
+      },
     });
 
     this.logger.log(
@@ -144,15 +188,13 @@ export class MatchingService {
   }
 
   async getMatchesForUser(userId: string) {
-    const userListingIds = await this.prisma.listing.findMany({
-      where: { userId },
-      select: { id: true },
-    });
-    const ids = userListingIds.map((l) => l.id);
-
     const matches = await this.prisma.match.findMany({
       where: {
-        OR: [{ listingAId: { in: ids } }, { listingBId: { in: ids } }],
+        AND: [
+          { OR: [{ listingA: { userId } }, { listingB: { userId } }] },
+          { listingA: { status: 'ACTIVE', intentionTag: { not: 'WANTED' } } },
+          { listingB: { status: 'ACTIVE', intentionTag: { not: 'WANTED' } } },
+        ],
       },
       include: {
         listingA: {
@@ -161,15 +203,24 @@ export class MatchingService {
         listingB: {
           include: { user: { select: { id: true, name: true, avatarUrl: true } } },
         },
+        participantStates: { where: { userId }, select: { status: true } },
       },
       orderBy: [{ score: 'desc' }, { createdAt: 'desc' }],
+      take: 100,
     });
     return Promise.all(
-      matches.map(async (match) => ({
+      matches
+        .filter((match) =>
+          match.listingAVersion === match.listingA.version &&
+          match.listingBVersion === match.listingB.version,
+        )
+        .map(async (match) => ({
         ...match,
+        status: match.participantStates[0]?.status ?? match.status,
+        participantStates: undefined,
         listingA: { ...match.listingA, images: await this.s3Service.getReadableUrls(match.listingA.images) },
         listingB: { ...match.listingB, images: await this.s3Service.getReadableUrls(match.listingB.images) },
-      })),
+        })),
     );
   }
 
@@ -186,28 +237,51 @@ export class MatchingService {
       throw new ForbiddenException('Not your match');
     }
 
-    return this.prisma.match.update({
-      where: { id },
-      data: { status },
+    return this.prisma.matchParticipantState.upsert({
+      where: { matchId_userId: { matchId: id, userId } },
+      create: {
+        matchId: id,
+        userId,
+        status,
+        viewedAt: status === 'VIEWED' ? new Date() : null,
+        dismissedAt: status === 'DISMISSED' ? new Date() : null,
+      },
+      update: {
+        status,
+        ...(status === 'VIEWED' ? { viewedAt: new Date() } : {}),
+        ...(status === 'DISMISSED' ? { dismissedAt: new Date() } : {}),
+      },
     });
   }
 
   async runDailyBackfill() {
-    const activeListings = await this.prisma.listing.findMany({
-      where: { status: 'ACTIVE', intentionTag: { not: 'WANTED' } },
-      select: { id: true },
-    });
+    const staleListings = await this.prisma.$queryRaw<Array<{ id: string; version: number }>>`
+      SELECT l.id, l.version
+      FROM "Listing" l
+      WHERE l.status = 'ACTIVE'
+        AND l."intentionTag" <> 'WANTED'
+        AND (
+          l."matchedVersion" IS DISTINCT FROM l.version
+          OR l."matchingAlgorithmVersion" IS DISTINCT FROM ${MATCHING_ALGORITHM_VERSION}
+        )
+      ORDER BY l."updatedAt" ASC, l.id ASC
+      LIMIT 500
+    `;
 
-    let totalMatches = 0;
-    for (const listing of activeListings) {
-      const matches = await this.runMatchForListing(listing.id, 'daily_backfill');
-      totalMatches += matches.length;
+    if (staleListings.length > 0) {
+      await this.prisma.matchingJob.createMany({
+        data: staleListings.map((listing) => ({
+          entityType: 'Listing',
+          entityId: listing.id,
+          entityVersion: listing.version,
+          reason: 'incremental_backfill',
+        })),
+        skipDuplicates: true,
+      });
     }
 
-    this.logger.log(
-      `Daily backfill complete. Found or refreshed ${totalMatches} matches across ${activeListings.length} listings.`,
-    );
-    return { status: 'backfill complete', scanned: activeListings.length, matches: totalMatches };
+    this.logger.log(`Incremental backfill queued ${staleListings.length} stale listing versions.`);
+    return { status: 'backfill queued', queued: staleListings.length };
   }
 
   async runNightlyScan() {
@@ -215,21 +289,29 @@ export class MatchingService {
   }
 
   private async findListingWithEmbedding(listingId: string) {
-    const rows = await this.prisma.$queryRaw<ListingForMatching[]>`
-      SELECT l.*, l.embedding::text AS "embeddingVector"
-      FROM "Listing" l
-      WHERE l.id = ${listingId}
-      LIMIT 1
-    `;
+    const [listing, rows] = await Promise.all([
+      this.prisma.listing.findUnique({ where: { id: listingId } }),
+      this.prisma.$queryRaw<Array<{ embeddingVector: string | null }>>`
+        SELECT l.embedding::text AS "embeddingVector"
+        FROM "Listing" l
+        WHERE l.id = ${listingId}
+        LIMIT 1
+      `,
+    ]);
 
-    return rows[0] ?? null;
+    return listing ? { ...listing, embeddingVector: rows[0]?.embeddingVector ?? null } : null;
   }
 
   private async ensureEmbedding(listing: ListingForMatching): Promise<ListingForMatching> {
     const text = this.embeddingService.buildListingText(listing);
-    const hash = this.embeddingService.hashText(text);
+    const hash = this.embeddingService.contentHash(text);
 
-    if (listing.embeddingVector && (listing.embeddingHash === hash || listing.embeddingTextHash === hash)) {
+    if (
+      listing.embeddingVector &&
+      (listing.embeddingHash === hash || listing.embeddingTextHash === hash) &&
+      listing.embeddingModel === this.embeddingService.model &&
+      listing.embeddingPipelineVersion === this.embeddingService.pipelineVersion
+    ) {
       return listing;
     }
 
@@ -247,7 +329,10 @@ export class MatchingService {
         SET embedding = ${vector}::vector,
             "embeddingHash" = ${hash},
             "embeddingTextHash" = ${hash},
-            "embeddingId" = ${`openai:text-embedding-3-small:${hash.slice(0, 16)}`},
+            "embeddingId" = ${`openai:${this.embeddingService.model}:${hash.slice(0, 16)}`},
+            "embeddingModel" = ${this.embeddingService.model},
+            "embeddingPipelineVersion" = ${this.embeddingService.pipelineVersion},
+            "embeddedAt" = CURRENT_TIMESTAMP,
             "lastMatchedAt" = null
         WHERE id = ${listing.id}
       `;
@@ -278,8 +363,8 @@ export class MatchingService {
     const fallbackCandidates = await this.getFallbackCandidates(listing);
     let vectorCandidates: ListingForMatching[] = [];
     try {
-      vectorCandidates = await this.prisma.$queryRaw<ListingForMatching[]>`
-        SELECT l.*, (1 - (l.embedding <=> ${listing.embeddingVector}::vector)) AS "semanticScore"
+      const ranked = await this.prisma.$queryRaw<Array<{ id: string; semanticScore: number | string }>>`
+        SELECT l.id, (1 - (l.embedding <=> ${listing.embeddingVector}::vector)) AS "semanticScore"
         FROM "Listing" l
         WHERE l.id != ${listing.id}
           AND l.category = ${listing.category}
@@ -291,6 +376,14 @@ export class MatchingService {
         ORDER BY l.embedding <=> ${listing.embeddingVector}::vector
         LIMIT ${this.maxCandidates}
       `;
+      const semanticById = new Map(ranked.map((row) => [row.id, Number(row.semanticScore)]));
+      const rows = ranked.length > 0
+        ? await this.prisma.listing.findMany({ where: { id: { in: ranked.map((row) => row.id) } } })
+        : [];
+      vectorCandidates = rows.map((candidate) => ({
+        ...candidate,
+        semanticScore: semanticById.get(candidate.id) ?? 0,
+      }));
     } catch (error) {
       this.logger.warn(`Vector candidate lookup failed; using local matching. ${this.errorMessage(error)}`);
     }
@@ -303,7 +396,7 @@ export class MatchingService {
     return [...candidatesById.values()].filter((candidate) => {
       if (!this.areIntentsCompatible(listing, candidate)) return false;
       return true;
-    }).slice(0, this.maxCandidates);
+    });
   }
 
   private async getFallbackCandidates(listing: Listing) {
@@ -319,16 +412,67 @@ export class MatchingService {
       where.city = { equals: listing.city, mode: 'insensitive' };
     }
 
-    const candidates = await this.prisma.listing.findMany({
+    const recentCandidates = await this.prisma.listing.findMany({
       where,
       orderBy: { createdAt: 'desc' },
       take: this.maxCandidates,
     });
 
+    const indexedIds = await this.findIndexedSurfaceCandidateIds(listing);
+    const recentIds = new Set(recentCandidates.map((candidate) => candidate.id));
+    const missingIds = indexedIds.filter((id) => !recentIds.has(id));
+    const indexedCandidates = missingIds.length > 0
+      ? await this.prisma.listing.findMany({ where: { ...where, id: { in: missingIds } } })
+      : [];
+    const candidates = [...new Map(
+      [...recentCandidates, ...indexedCandidates].map((candidate) => [candidate.id, candidate]),
+    ).values()];
+
     return candidates.filter((candidate) => {
       if (!this.areIntentsCompatible(listing, candidate)) return false;
       return true;
     });
+  }
+
+  private async findIndexedSurfaceCandidateIds(listing: Listing) {
+    const query = (listing.pairingKeyword || listing.title).trim().slice(0, 160);
+    const attributes = this.surfaceAttributes(listing.compatibilityAttributes);
+    const attributesJson = JSON.stringify(attributes);
+    const hasAttributes = Object.keys(attributes).length > 0;
+    const attributePredicate = hasAttributes
+      ? Prisma.sql`l."compatibilityAttributes" @> ${attributesJson}::jsonb`
+      : Prisma.sql`FALSE`;
+    const textPredicate = query
+      ? Prisma.sql`l."searchDocument" @@ websearch_to_tsquery('simple', ${query})`
+      : Prisma.sql`FALSE`;
+    const cityFilter = this.requireCityMatch && listing.city
+      ? Prisma.sql`AND l.city = ${listing.city}`
+      : Prisma.empty;
+
+    if (!hasAttributes && !query) return [];
+    try {
+      const rows = await this.prisma.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+        SELECT l.id
+        FROM "Listing" l
+        WHERE l.id <> ${listing.id}
+          AND l."userId" <> ${listing.userId}
+          AND l.status = 'ACTIVE'
+          AND l."intentionTag" <> 'WANTED'
+          AND l.category = ${listing.category}
+          ${cityFilter}
+          AND (${attributePredicate} OR ${textPredicate})
+        ORDER BY
+          CASE WHEN ${attributePredicate} THEN 1 ELSE 0 END DESC,
+          ts_rank_cd(l."searchDocument", websearch_to_tsquery('simple', ${query})) DESC,
+          l."createdAt" DESC,
+          l.id DESC
+        LIMIT ${this.maxCandidates}
+      `);
+      return rows.map((row) => row.id);
+    } catch (error) {
+      this.logger.warn(`Indexed surface candidate lookup failed; using recent candidates. ${this.errorMessage(error)}`);
+      return [];
+    }
   }
 
   private getCompatibleIntents(intent: IntentionTag): IntentionTag[] {
@@ -351,7 +495,7 @@ export class MatchingService {
 
     if (attribute.breakdown.mode === 'text_fallback') {
       const pairScore = Math.max(attribute.score, semantic);
-      const score = Math.min(1, pairScore * 0.55 + cityScore * 0.25 + intentScore * 0.2);
+      const score = Math.min(1, pairScore * 0.65 + cityScore * 0.15 + intentScore * 0.15 + conditionScore * 0.05);
       return {
         listing: candidate,
         score: this.round(score),
@@ -361,7 +505,8 @@ export class MatchingService {
           attribute: attribute.breakdown,
           cityScore,
           intentScore,
-          weights: { pair: 0.55, city: 0.25, intent: 0.2 },
+          conditionScore,
+          weights: { pair: 0.65, city: 0.15, intent: 0.15, condition: 0.05 },
         },
       };
     }
@@ -370,7 +515,7 @@ export class MatchingService {
       1,
       attribute.score * this.attributeWeight + semantic * this.semanticWeight,
     );
-    const score = Math.min(1, compatibilityScore * 0.65 + cityScore * 0.25 + intentScore * 0.1);
+    const score = Math.min(1, compatibilityScore * 0.7 + cityScore * 0.15 + intentScore * 0.1 + conditionScore * 0.05);
 
     return {
       listing: candidate,
@@ -383,9 +528,10 @@ export class MatchingService {
         conditionScore,
         intentScore,
         weights: {
-          compatibility: 0.65,
-          city: 0.25,
+          compatibility: 0.7,
+          city: 0.15,
           intent: 0.1,
+          condition: 0.05,
           compatibilityMix: { attribute: this.attributeWeight, semantic: this.semanticWeight },
         },
       },
@@ -592,16 +738,33 @@ export class MatchingService {
         `/marketplace/${listing.id}`,
       ));
     }
-    await Promise.all(notifications);
-
-    await this.prisma.match.update({
-      where: { id: matchId },
-      data: { notifiedAt: new Date() },
-    });
+    try {
+      await Promise.all(notifications);
+    } catch (error) {
+      await this.prisma.match.updateMany({
+        where: { id: matchId },
+        data: { notifiedAt: null },
+      });
+      throw error;
+    }
   }
 
   private round(value: number) {
     return Math.round(value * 1000) / 1000;
+  }
+
+  private surfaceAttributes(value: unknown): Record<string, string | number | boolean> {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+    const excluded = new Set(['flow', 'guestlisting', 'needspair', 'neededpiece', 'side', 'pieceidentifier']);
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .filter(([key, item]) =>
+          !excluded.has(this.normalizeKey(key)) &&
+          (typeof item === 'string' || typeof item === 'number' || typeof item === 'boolean') &&
+          item !== '',
+        )
+        .slice(0, 8) as Array<[string, string | number | boolean]>,
+    );
   }
 
   private errorMessage(error: unknown) {

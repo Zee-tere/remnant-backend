@@ -1,5 +1,5 @@
 import { Injectable, InternalServerErrorException, BadRequestException, ServiceUnavailableException } from '@nestjs/common';
-import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand, HeadObjectCommand, HeadBucketCommand } from '@aws-sdk/client-s3';
+import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand, HeadObjectCommand, HeadBucketCommand, PutObjectTaggingCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { ConfigService } from '@nestjs/config';
 import { v4 as uuidv4 } from 'uuid';
@@ -100,6 +100,7 @@ export class S3Service {
       CacheControl: 'public, max-age=31536000, immutable',
       ContentDisposition: 'inline',
       ServerSideEncryption: 'AES256' as const,
+      Tagging: 'remnant-status=temporary',
     };
 
     try {
@@ -197,8 +198,16 @@ export class S3Service {
         `${this.bucketName}.s3.${this.region}.amazonaws.com`,
         `${this.bucketName}.s3.amazonaws.com`,
       ]);
-      if (!expectedHosts.has(url.hostname)) return null;
-      const key = decodeURIComponent(url.pathname.replace(/^\//, ''));
+      let path = url.pathname;
+      if (!expectedHosts.has(url.hostname)) {
+        if (!this.publicBaseUrl) return null;
+        const publicBase = new URL(this.publicBaseUrl);
+        if (url.hostname !== publicBase.hostname) return null;
+        const basePath = publicBase.pathname.replace(/\/$/, '');
+        if (basePath && !path.startsWith(`${basePath}/`)) return null;
+        path = path.slice(basePath.length);
+      }
+      const key = decodeURIComponent(path.replace(/^\//, ''));
       return key.startsWith('listings/') ? key : null;
     } catch {
       return storedUrl.startsWith('listings/') ? storedUrl : null;
@@ -214,6 +223,24 @@ export class S3Service {
       });
       throw new InternalServerErrorException('File deletion failed. Please try again.');
     }
+  }
+
+  async markFilesAttached(storedUrls: string[]): Promise<void> {
+    await this.tagFiles(storedUrls, 'attached');
+  }
+
+  async markFilesOrphaned(storedUrls: string[]): Promise<void> {
+    await this.tagFiles(storedUrls, 'orphaned');
+  }
+
+  private async tagFiles(storedUrls: string[], status: 'attached' | 'orphaned') {
+    if (!this.bucketName || storedUrls.length === 0) return;
+    const keys = [...new Set(storedUrls.map((url) => this.getObjectKey(url)).filter((key): key is string => Boolean(key)))];
+    await Promise.all(keys.map((key) => this.s3Client.send(new PutObjectTaggingCommand({
+      Bucket: this.bucketName,
+      Key: key,
+      Tagging: { TagSet: [{ Key: 'remnant-status', Value: status }] },
+    }))));
   }
 
   async fileExists(fileKey: string): Promise<boolean> {

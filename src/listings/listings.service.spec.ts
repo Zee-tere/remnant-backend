@@ -1,16 +1,21 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { ListingsService } from './listings.service';
 import { PrismaService } from '../prisma/prisma.service';
-import { MatchingService } from '../matching/matching.service';
 import { EmbeddingService } from '../matching/embedding.service';
 import { S3Service } from '../utils/s3.service';
-import { PairAlertsService } from '../pair-alerts/pair-alerts.service';
+import { MatchingJobsService } from '../matching/matching-jobs.service';
 
 describe('ListingsService', () => {
   let service: ListingsService;
-  let s3: { getReadableUrls: jest.Mock; getObjectKey: jest.Mock };
+  let s3: {
+    getReadableUrls: jest.Mock;
+    getObjectKey: jest.Mock;
+    markFilesAttached: jest.Mock;
+    markFilesOrphaned: jest.Mock;
+  };
   let prisma: {
     $queryRaw: jest.Mock;
+    $transaction: jest.Mock;
     listing: {
       create: jest.Mock;
       findMany: jest.Mock;
@@ -25,6 +30,7 @@ describe('ListingsService', () => {
   beforeEach(async () => {
     prisma = {
       $queryRaw: jest.fn(),
+      $transaction: jest.fn(),
       listing: {
         create: jest.fn(),
         findMany: jest.fn(),
@@ -38,14 +44,25 @@ describe('ListingsService', () => {
     s3 = {
       getReadableUrls: jest.fn().mockImplementation((images: string[]) => images),
       getObjectKey: jest.fn(),
+      markFilesAttached: jest.fn().mockResolvedValue(undefined),
+      markFilesOrphaned: jest.fn().mockResolvedValue(undefined),
     };
+    prisma.$transaction.mockImplementation((callback) => callback(prisma));
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         ListingsService,
         { provide: PrismaService, useValue: prisma },
-        { provide: MatchingService, useValue: { runMatchForListing: jest.fn().mockResolvedValue([]) } },
-        { provide: EmbeddingService, useValue: { isConfigured: jest.fn().mockReturnValue(false) } },
-        { provide: PairAlertsService, useValue: { runMatchForListing: jest.fn().mockResolvedValue([]) } },
+        {
+          provide: MatchingJobsService,
+          useValue: { enqueueListing: jest.fn().mockResolvedValue({}) },
+        },
+        {
+          provide: EmbeddingService,
+          useValue: {
+            isConfigured: jest.fn().mockReturnValue(false),
+            generateQueryEmbedding: jest.fn(),
+          },
+        },
         {
           provide: S3Service,
           useValue: s3,
@@ -195,13 +212,16 @@ describe('ListingsService', () => {
         }),
       }),
     );
-    expect((service as any).matchingService.runMatchForListing).toHaveBeenCalledWith(
+    expect((service as any).matchingJobsService.enqueueListing).toHaveBeenCalledWith(
+      prisma,
       'guest-listing',
+      undefined,
       'guest_listing_created',
     );
   });
 
   it('searches every meaningful word across title, description, pairing term, category, and state', async () => {
+    prisma.$queryRaw.mockRejectedValueOnce(new Error('search index unavailable'));
     prisma.listing.findMany.mockResolvedValue([
       {
         id: 'listing-1',
@@ -249,7 +269,7 @@ describe('ListingsService', () => {
     });
   });
 
-  it('prioritizes location, then intent, then description for similar listings', async () => {
+  it('prioritizes product similarity before location for similar listings', async () => {
     const source = {
       id: 'source',
       title: 'AirPod Pro right earbud',
@@ -289,9 +309,9 @@ describe('ListingsService', () => {
     const result = await service.findSimilar(source.id, 3);
 
     expect(result.map((listing) => listing.id)).toEqual([
-      'same-city',
       'same-intent-description',
       'same-description',
+      'same-city',
     ]);
   });
 });

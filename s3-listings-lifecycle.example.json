@@ -1,0 +1,31 @@
+{
+  "Rules": [
+    {
+      "ID": "expire-unclaimed-listing-uploads",
+      "Status": "Enabled",
+      "Filter": {
+        "And": {
+          "Prefix": "listings/",
+          "Tags": [
+            { "Key": "remnant-status", "Value": "temporary" }
+          ]
+        }
+      },
+      "Expiration": { "Days": 1 },
+      "AbortIncompleteMultipartUpload": { "DaysAfterInitiation": 1 }
+    },
+    {
+      "ID": "expire-replaced-listing-images",
+      "Status": "Enabled",
+      "Filter": {
+        "And": {
+          "Prefix": "listings/",
+          "Tags": [
+            { "Key": "remnant-status", "Value": "orphaned" }
+          ]
+        }
+      },
+      "Expiration": { "Days": 7 }
+    }
+  ]
+}

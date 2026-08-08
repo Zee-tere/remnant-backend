@@ -384,16 +384,6 @@ export class MessagesService {
           },
         });
 
-        const notification = await transaction.notification.create({
-          data: {
-            userId: recipientId,
-            type: 'MESSAGE_RECEIVED',
-            title: 'New message',
-            body: content.length > 90 ? `${content.slice(0, 87)}...` : content,
-            link: '/user/dashboard?section=messages',
-          },
-        });
-
         const outboxEventId = randomUUID();
         await transaction.outboxEvent.create({
           data: {
@@ -411,7 +401,6 @@ export class MessagesService {
               clientMessageId,
               conversationId,
               recipientId,
-              notificationId: notification.id,
               sequence: message.sequence,
               occurredAt: message.createdAt.toISOString(),
             },

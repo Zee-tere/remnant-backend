@@ -37,16 +37,17 @@ export class NotificationsService {
 
   async getNotifications(userId: string, page = 1, limit = 20) {
     const skip = (page - 1) * limit;
+    const where = { userId, type: NotificationType.PAIR_MATCH };
 
     const [notifications, total, unreadCount] = await Promise.all([
       this.prisma.notification.findMany({
-        where: { userId },
+        where,
         orderBy: { createdAt: 'desc' },
         skip,
         take: limit,
       }),
-      this.prisma.notification.count({ where: { userId } }),
-      this.prisma.notification.count({ where: { userId, isRead: false } }),
+      this.prisma.notification.count({ where }),
+      this.prisma.notification.count({ where: { ...where, isRead: false } }),
     ]);
 
     return { notifications, total, unreadCount, page, limit };
@@ -61,7 +62,7 @@ export class NotificationsService {
 
   async markAllAsRead(userId: string) {
     return this.prisma.notification.updateMany({
-      where: { userId, isRead: false },
+      where: { userId, type: NotificationType.PAIR_MATCH, isRead: false },
       data: { isRead: true },
     });
   }

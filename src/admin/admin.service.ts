@@ -175,7 +175,7 @@ export class AdminService {
   async removeListing(id: string) {
     const listing = await this.prisma.listing.findUnique({ where: { id }, select: { id: true } });
     if (!listing) throw new NotFoundException('Listing not found');
-    await this.prisma.listing.update({ where: { id }, data: { status: 'PAUSED' } });
+    await this.prisma.listing.update({ where: { id }, data: { status: 'DELETED' } });
     return { message: 'Listing removed from the public marketplace' };
   }
 
@@ -277,7 +277,7 @@ export class AdminService {
         }
         await transaction.listing.update({
           where: { id: report.targetId },
-          data: { status: dto.action === AdminReportAction.FLAG_LISTING ? 'FLAGGED' : 'PAUSED' },
+          data: { status: dto.action === AdminReportAction.FLAG_LISTING ? 'FLAGGED' : 'DELETED' },
         });
       }
 

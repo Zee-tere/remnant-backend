@@ -4,7 +4,10 @@ import { createHash } from 'crypto';
 
 @Injectable()
 export class EmbeddingService {
+  readonly model = 'text-embedding-3-small';
+  readonly pipelineVersion = 2;
   private openai?: OpenAI;
+  private readonly queryCache = new Map<string, { embedding: number[]; expiresAt: number }>();
 
   isConfigured() {
     return Boolean(process.env.OPENAI_API_KEY);
@@ -54,11 +57,30 @@ export class EmbeddingService {
     }
 
     const response = await this.getClient().embeddings.create({
-      model: 'text-embedding-3-small',
+      model: this.model,
       input: text,
     });
 
     return response.data[0].embedding;
+  }
+
+  async generateQueryEmbedding(text: string): Promise<number[]> {
+    const normalized = text.trim().toLowerCase().replace(/\s+/g, ' ');
+    const key = this.hashText(`${this.model}:${this.pipelineVersion}:${normalized}`);
+    const cached = this.queryCache.get(key);
+    if (cached && cached.expiresAt > Date.now()) return cached.embedding;
+
+    const embedding = await this.generateEmbedding(normalized);
+    if (this.queryCache.size >= 500) {
+      const oldest = this.queryCache.keys().next().value as string | undefined;
+      if (oldest) this.queryCache.delete(oldest);
+    }
+    this.queryCache.set(key, { embedding, expiresAt: Date.now() + 6 * 60 * 60 * 1000 });
+    return embedding;
+  }
+
+  contentHash(text: string) {
+    return this.hashText(`${this.model}:${this.pipelineVersion}:${text}`);
   }
 
   private getClient() {

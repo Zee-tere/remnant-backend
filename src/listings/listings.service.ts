@@ -2,14 +2,13 @@ import { Injectable, NotFoundException, ForbiddenException, Logger, BadRequestEx
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateGuestListingDto, CreateListingDto, GuestContactDto, UpdateListingDto } from './listings.dto';
 import { Prisma } from '@prisma/client';
-import { MatchingService } from '../matching/matching.service';
-import { EmbeddingService } from '../matching/embedding.service';
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'crypto';
 import { S3Service } from '../utils/s3.service';
 import { IntentionTag } from '@prisma/client';
 import { NIGERIAN_STATES } from '../config/nigeria-locations';
 import { LISTING_CATEGORIES } from '../config/listing-taxonomy';
-import { PairAlertsService } from '../pair-alerts/pair-alerts.service';
+import { MatchingJobsService } from '../matching/matching-jobs.service';
+import { EmbeddingService } from '../matching/embedding.service';
 
 const listingCardSelect = {
   id: true,
@@ -56,13 +55,13 @@ const SEARCH_STOP_WORDS = new Set([
 @Injectable()
 export class ListingsService {
   private readonly logger = new Logger(ListingsService.name);
+  private embeddedCorpusCache = { available: false, checkedAt: 0 };
 
   constructor(
     private prisma: PrismaService,
-    private matchingService: MatchingService,
-    private embeddingService: EmbeddingService,
     private s3Service: S3Service,
-    private pairAlertsService: PairAlertsService,
+    private matchingJobsService: MatchingJobsService,
+    private embeddingService: EmbeddingService,
   ) {}
 
   private generateSlug(title: string): string {
@@ -79,6 +78,7 @@ export class ListingsService {
   async create(userId: string, dto: CreateListingDto) {
     this.assertPublicListingIntent(dto.intentionTag);
     this.assertManagedImages(dto.images);
+    this.assertCompatibilityAttributes(dto.compatibilityAttributes);
     const slug = this.generateSlug(dto.title);
 
     const data: Prisma.ListingCreateInput = {
@@ -96,12 +96,15 @@ export class ListingsService {
       images: dto.images || [],
     };
 
-    const listing = await this.prisma.listing.create({
-      data,
-      include: { user: { select: { id: true, name: true, avatarUrl: true, trustTier: true } } },
+    const listing = await this.prisma.$transaction(async (transaction) => {
+      const created = await transaction.listing.create({
+        data,
+        include: { user: { select: { id: true, name: true, avatarUrl: true, trustTier: true } } },
+      });
+      await this.matchingJobsService.enqueueListing(transaction, created.id, created.version, 'listing_created');
+      return created;
     });
-
-    await this.runListingMatching(listing.id, 'listing_created');
+    await this.markListingImagesAttached(listing.images, listing.id);
     void this.notifyIndexNow(listing.slug);
     return this.withReadableImages(listing);
   }
@@ -109,13 +112,15 @@ export class ListingsService {
   async createGuest(dto: CreateGuestListingDto) {
     this.assertPublicListingIntent(dto.intentionTag);
     this.assertManagedImages(dto.images);
+    this.assertCompatibilityAttributes(dto.compatibilityAttributes);
     const guestContact = this.normalizeGuestContact(dto.guestContact);
     const slug = this.generateSlug(dto.title);
     const managementToken = randomBytes(32).toString('hex');
     const guestManageTokenHash = this.hashGuestManagementToken(managementToken);
 
-    const listing = await this.prisma.listing.create({
-      data: {
+    const listing = await this.prisma.$transaction(async (transaction) => {
+      const created = await transaction.listing.create({
+        data: {
         user: {
           create: {
             email: `guest-${randomUUID()}@guest.remnant.local`,
@@ -139,11 +144,13 @@ export class ListingsService {
           ...guestContact,
           manageTokenHash: guestManageTokenHash,
         } as Prisma.InputJsonValue,
-      },
-      include: { user: { select: { id: true, name: true, avatarUrl: true, trustTier: true } } },
+        },
+        include: { user: { select: { id: true, name: true, avatarUrl: true, trustTier: true } } },
+      });
+      await this.matchingJobsService.enqueueListing(transaction, created.id, created.version, 'guest_listing_created');
+      return created;
     });
-
-    await this.runListingMatching(listing.id, 'guest_listing_created');
+    await this.markListingImagesAttached(listing.images, listing.id);
     void this.notifyIndexNow(listing.slug);
     return {
       ...(await this.withReadableImages(listing)),
@@ -223,10 +230,14 @@ export class ListingsService {
     search?: string;
     page?: number;
     limit?: number;
+    cursor?: string;
+    pagination?: string;
   }) {
     const page = Math.max(Number(filters?.page) || 1, 1);
     const limit = Math.min(Math.max(Number(filters?.limit) || 20, 1), 50);
-    const skip = (page - 1) * limit;
+    const cursorMode = filters?.pagination === 'cursor' || filters?.cursor !== undefined;
+    const cursor = filters?.cursor ? this.decodeListingCursor(filters.cursor) : null;
+    const skip = cursorMode ? undefined : (page - 1) * limit;
 
     const where: Prisma.ListingWhereInput = {
       status: 'ACTIVE',
@@ -257,23 +268,40 @@ export class ListingsService {
       Object.assign(where, this.buildLexicalSearchWhere(search));
     }
 
-    const [listings, total] = await Promise.all([
-      this.prisma.listing.findMany({
-        where,
-        skip,
-        take: limit,
-        orderBy: { createdAt: 'desc' },
-        select: listingCardSelect,
-      }),
-      this.prisma.listing.count({ where }),
-    ]);
+    if (cursor) {
+      where.AND = [
+        ...(Array.isArray(where.AND) ? where.AND : where.AND ? [where.AND] : []),
+        {
+          OR: [
+            { createdAt: { lt: new Date(cursor.createdAt) } },
+            { createdAt: new Date(cursor.createdAt), id: { lt: cursor.id } },
+          ],
+        },
+      ];
+    }
+
+    const listings = await this.prisma.listing.findMany({
+      where,
+      ...(skip !== undefined ? { skip } : {}),
+      take: cursorMode ? limit + 1 : limit,
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      select: listingCardSelect,
+    });
+    const hasMore = cursorMode ? listings.length > limit : false;
+    const pageListings = hasMore ? listings.slice(0, limit) : listings;
+    const total = cursorMode ? undefined : await this.prisma.listing.count({ where });
+    const last = pageListings.at(-1);
 
     return {
-      listings: await Promise.all(listings.map((listing) => this.withReadableImages(listing, 1))),
+      listings: await Promise.all(pageListings.map((listing) => this.withReadableImages(listing, 1))),
       total,
       page,
       limit,
-      totalPages: Math.ceil(total / limit),
+      totalPages: total === undefined ? undefined : Math.ceil(total / limit),
+      hasMore,
+      nextCursor: hasMore && last
+        ? this.encodeListingCursor({ createdAt: last.createdAt.toISOString(), id: last.id })
+        : null,
     };
   }
 
@@ -350,8 +378,13 @@ export class ListingsService {
 
   async findByUser(userId: string) {
     const listings = await this.prisma.listing.findMany({
-      where: { userId, intentionTag: { not: 'WANTED' } },
+      where: {
+        userId,
+        status: { not: 'DELETED' },
+        intentionTag: { not: 'WANTED' },
+      },
       orderBy: { createdAt: 'desc' },
+      take: 100,
     });
     return Promise.all(listings.map((listing) => this.withReadableImages(listing)));
   }
@@ -366,36 +399,45 @@ export class ListingsService {
     let rankedIds: string[] = [];
 
     try {
-      const ranked = await this.prisma.$queryRaw<Array<{ id: string; score: number | string }>>`
+      const ranked = await this.prisma.$queryRaw<Array<{
+        id: string;
+        similarity: number | string;
+        cityMatch: boolean;
+        intentMatch: boolean;
+      }>>`
         SELECT candidate.id,
-          (
-            CASE
-              WHEN source.city IS NOT NULL AND candidate.city = source.city THEN 1000
-              ELSE 0
-            END
-            + CASE
-                WHEN candidate."intentionTag" = source."intentionTag" THEN 100
-                ELSE 0
-              END
-            + CASE
-                WHEN source.embedding IS NOT NULL AND candidate.embedding IS NOT NULL
-                  THEN GREATEST(0, 1 - (candidate.embedding <=> source.embedding)) * 10
-                ELSE 0
-              END
-          )::double precision AS score
+          GREATEST(0, 1 - (candidate.embedding <=> source.embedding))::double precision AS similarity,
+          (source.city IS NOT NULL AND candidate.city = source.city) AS "cityMatch",
+          (candidate."intentionTag" = source."intentionTag") AS "intentMatch"
         FROM "Listing" candidate
         JOIN "Listing" source ON source.id = ${id}
         WHERE candidate.status = 'ACTIVE'
           AND candidate."intentionTag" <> 'WANTED'
           AND candidate.id <> source.id
-        ORDER BY score DESC, candidate."createdAt" DESC
-        LIMIT ${limit}
+          AND candidate.category = source.category
+          AND source.embedding IS NOT NULL
+          AND candidate.embedding IS NOT NULL
+        ORDER BY candidate.embedding <=> source.embedding
+        LIMIT ${Math.min(limit * 4, 96)}
       `;
-      rankedIds = ranked.map((item) => item.id);
+      rankedIds = ranked
+        .map((item) => ({
+          id: item.id,
+          score: Number(item.similarity) * 100 + (item.cityMatch ? 5 : 0) + (item.intentMatch ? 2 : 0),
+        }))
+        .sort((left, right) => right.score - left.score)
+        .slice(0, limit)
+        .map((item) => item.id);
+      if (rankedIds.length === 0) throw new Error('No embedded candidates');
     } catch (error) {
       this.logger.warn(`Vector ranking unavailable for listing ${id}; using text fallback.`);
       const candidates = await this.prisma.listing.findMany({
-        where: { status: 'ACTIVE', intentionTag: { not: 'WANTED' }, id: { not: id } },
+        where: {
+          status: 'ACTIVE',
+          intentionTag: { not: 'WANTED' },
+          category: source.category,
+          id: { not: id },
+        },
         orderBy: { createdAt: 'desc' },
         take: 100,
         select: {
@@ -411,9 +453,9 @@ export class ListingsService {
         .map((candidate) => ({
           id: candidate.id,
           score:
-            (source.city && candidate.city === source.city ? 1000 : 0) +
-            (candidate.intentionTag === source.intentionTag ? 100 : 0) +
-            this.descriptionSimilarity(source, candidate) * 10,
+            this.descriptionSimilarity(source, candidate) * 100 +
+            (source.city && candidate.city === source.city ? 5 : 0) +
+            (candidate.intentionTag === source.intentionTag ? 2 : 0),
         }))
         .sort((a, b) => b.score - a.score)
         .slice(0, limit)
@@ -433,6 +475,7 @@ export class ListingsService {
   async update(id: string, userId: string, dto: UpdateListingDto) {
     if (dto.intentionTag !== undefined) this.assertPublicListingIntent(dto.intentionTag);
     this.assertManagedImages(dto.images);
+    this.assertCompatibilityAttributes(dto.compatibilityAttributes);
     const listing = await this.prisma.listing.findUnique({ where: { id } });
     if (!listing) throw new NotFoundException(`Listing not found`);
     if (listing.userId !== userId) throw new ForbiddenException('Not your listing');
@@ -451,13 +494,23 @@ export class ListingsService {
     if (dto.city !== undefined) data.city = dto.city;
     if (dto.images !== undefined) data.images = dto.images;
 
-    const updated = await this.prisma.listing.update({
-      where: { id },
-      data,
-      include: { user: { select: { id: true, name: true, avatarUrl: true, trustTier: true } } },
+    data.version = { increment: 1 };
+    const updated = await this.prisma.$transaction(async (transaction) => {
+      const row = await transaction.listing.update({
+        where: { id },
+        data,
+        include: { user: { select: { id: true, name: true, avatarUrl: true, trustTier: true } } },
+      });
+      await this.matchingJobsService.enqueueListing(transaction, row.id, row.version, 'listing_updated');
+      return row;
     });
-
-    await this.runListingMatching(updated.id, 'listing_updated');
+    if (dto.images !== undefined) {
+      const removedImages = listing.images.filter((image) => !dto.images?.includes(image));
+      await Promise.all([
+        this.markListingImagesAttached(updated.images, updated.id),
+        this.markListingImagesOrphaned(removedImages, updated.id),
+      ]);
+    }
     void this.notifyIndexNow(updated.slug);
     return this.withReadableImages(updated);
   }
@@ -469,10 +522,10 @@ export class ListingsService {
 
     await this.prisma.listing.update({
       where: { id },
-      data: { status: 'PAUSED' },
+      data: { status: 'DELETED' },
     });
     void this.notifyIndexNow(listing.slug);
-    return { message: 'Listing removed from the marketplace' };
+    return { message: 'Listing deleted' };
   }
 
   async saveListing(userId: string, listingId: string) {
@@ -509,6 +562,7 @@ export class ListingsService {
         },
       },
       orderBy: { createdAt: 'desc' },
+      take: 100,
     });
     return Promise.all(saved.map((item) => this.withReadableImages(item.listing)));
   }
@@ -519,9 +573,11 @@ export class ListingsService {
     city?: string;
     intent?: string;
     limit?: number;
+    page?: number;
   }) {
     const query = params.query?.trim();
     const limit = Math.min(Math.max(Number(params.limit) || 20, 1), 50);
+    const page = Math.min(Math.max(Number(params.page) || 1, 1), 20);
 
     if (params.category && !LISTING_CATEGORIES.includes(params.category as (typeof LISTING_CATEGORIES)[number])) {
       throw new BadRequestException('Unknown listing category');
@@ -539,6 +595,7 @@ export class ListingsService {
         category: params.category,
         intentionTag: params.intent,
         city: params.city,
+        page,
         limit,
       });
       return fallback.listings;
@@ -552,21 +609,22 @@ export class ListingsService {
         ? { intentionTag: params.intent as IntentionTag }
         : { intentionTag: { not: 'WANTED' as IntentionTag } }),
     };
-    const candidateLimit = Math.min(Math.max(limit * 6, 60), 200);
-    const lexicalCandidates = await this.prisma.listing.findMany({
-      where: {
-        ...baseWhere,
-        ...this.buildLexicalSearchWhere(query),
-      },
-      orderBy: { createdAt: 'desc' },
-      take: candidateLimit,
-      select: listingSearchSelect,
-    });
+    const candidateLimit = Math.min(Math.max(limit * page * 6, 60), 500);
+    const lexicalCandidates = await this.findLexicalCandidates(query, baseWhere, candidateLimit);
 
     const semanticRelevance = new Map<string, number>();
-    if (this.embeddingService.isConfigured()) {
+    const minimumLexicalResults = Math.max(
+      1,
+      Number(process.env.SEMANTIC_SEARCH_MIN_LEXICAL_RESULTS || 6),
+    );
+    const semanticEnabled =
+      process.env.SEMANTIC_SEARCH_ENABLED !== 'false' &&
+      this.embeddingService.isConfigured() &&
+      lexicalCandidates.length < minimumLexicalResults &&
+      await this.hasEmbeddedCorpus();
+    if (semanticEnabled) {
       try {
-        const queryEmbedding = await this.embeddingService.generateEmbedding(query);
+        const queryEmbedding = await this.embeddingService.generateQueryEmbedding(query);
         const vector = JSON.stringify(queryEmbedding);
         const categoryFilter = params.category ? Prisma.sql`AND l.category = ${params.category}` : Prisma.empty;
         const cityFilter = params.city ? Prisma.sql`AND l.city = ${params.city}` : Prisma.empty;
@@ -619,7 +677,7 @@ export class ListingsService {
       .sort((left, right) =>
         right.score - left.score || right.listing.createdAt.getTime() - left.listing.createdAt.getTime(),
       )
-      .slice(0, limit);
+      .slice((page - 1) * limit, page * limit);
 
     return Promise.all(
       ranked.map(async ({ listing, score }) => ({
@@ -627,6 +685,88 @@ export class ListingsService {
         relevance: this.roundSearchScore(score),
       })),
     );
+  }
+
+  private async findLexicalCandidates(
+    query: string,
+    baseWhere: Prisma.ListingWhereInput,
+    limit: number,
+  ): Promise<SearchListing[]> {
+    const category = typeof baseWhere.category === 'string' ? baseWhere.category : undefined;
+    const city = typeof baseWhere.city === 'string' ? baseWhere.city : undefined;
+    const intent = typeof baseWhere.intentionTag === 'string' ? baseWhere.intentionTag : undefined;
+    const categoryFilter = category ? Prisma.sql`AND l.category = ${category}` : Prisma.empty;
+    const cityFilter = city ? Prisma.sql`AND l.city = ${city}` : Prisma.empty;
+    const intentFilter = intent
+      ? Prisma.sql`AND l."intentionTag"::text = ${intent}`
+      : Prisma.sql`AND l."intentionTag" <> 'WANTED'`;
+
+    try {
+      return await this.prisma.$queryRaw<SearchListing[]>(Prisma.sql`
+        SELECT
+          l.id, l.title, l.slug, l."intentionTag", l.price, l.status,
+          l.images, l.city, l."pairingKeyword", l."compatibilityAttributes",
+          l."createdAt", l."updatedAt", l.description, l.category,
+          l."isGuestListing"
+        FROM "Listing" l
+        WHERE l.status = 'ACTIVE'
+          ${intentFilter}
+          ${categoryFilter}
+          ${cityFilter}
+          AND (
+            l."searchDocument" @@ websearch_to_tsquery('simple', ${query})
+            OR similarity(
+              lower(
+                coalesce(l.title, '') || ' ' ||
+                coalesce(l."pairingKeyword", '') || ' ' ||
+                coalesce(l.category, '') || ' ' ||
+                coalesce(l.city, '') || ' ' ||
+                coalesce(l.description, '')
+              ),
+              lower(${query})
+            ) >= 0.18
+            OR lower(l.title) % lower(${query})
+            OR lower(coalesce(l."pairingKeyword", '')) % lower(${query})
+          )
+        ORDER BY
+          (
+            ts_rank_cd(l."searchDocument", websearch_to_tsquery('simple', ${query})) * 2
+            + GREATEST(
+                similarity(lower(l.title), lower(${query})),
+                similarity(lower(coalesce(l."pairingKeyword", '')), lower(${query})),
+                similarity(lower(l.description), lower(${query})) * 0.6
+              )
+          ) DESC,
+          l."createdAt" DESC,
+          l.id DESC
+        LIMIT ${limit}
+      `);
+    } catch (error) {
+      this.logger.warn(`Indexed text search unavailable; using compatibility fallback. ${this.errorMessage(error)}`);
+      return this.prisma.listing.findMany({
+        where: { ...baseWhere, ...this.buildLexicalSearchWhere(query) },
+        orderBy: { createdAt: 'desc' },
+        take: limit,
+        select: listingSearchSelect,
+      });
+    }
+  }
+
+  private async hasEmbeddedCorpus() {
+    if (this.embeddedCorpusCache.checkedAt > Date.now() - 60_000) {
+      return this.embeddedCorpusCache.available;
+    }
+    const rows = await this.prisma.$queryRaw<Array<{ available: boolean }>>`
+      SELECT EXISTS(
+        SELECT 1 FROM "Listing"
+        WHERE status = 'ACTIVE' AND "intentionTag" <> 'WANTED' AND embedding IS NOT NULL
+      ) AS available
+    `;
+    this.embeddedCorpusCache = {
+      available: Boolean(rows[0]?.available),
+      checkedAt: Date.now(),
+    };
+    return this.embeddedCorpusCache.available;
   }
 
   private async withReadableImages<T extends { images: string[] }>(listing: T, maxImages?: number): Promise<T> {
@@ -724,43 +864,6 @@ export class ListingsService {
     }
   }
 
-  private async storeListingEmbedding(listing: {
-    id: string;
-    title?: unknown;
-    description?: unknown;
-    category?: unknown;
-    condition?: unknown;
-    intentionTag?: unknown;
-    pairingKeyword?: unknown;
-    compatibilityAttributes?: unknown;
-    city?: unknown;
-    embeddingHash?: string | null;
-    embeddingTextHash?: string | null;
-    [key: string]: unknown;
-  }) {
-    if (!this.embeddingService.isConfigured()) return;
-
-    const text = this.embeddingService.buildListingText(listing);
-    const embeddingHash = this.embeddingService.hashText(text);
-
-    if (listing.embeddingHash === embeddingHash || listing.embeddingTextHash === embeddingHash) {
-      return;
-    }
-
-    const embedding = await this.embeddingService.generateEmbedding(text);
-    const vector = JSON.stringify(embedding);
-
-    await this.prisma.$executeRaw`
-      UPDATE "Listing"
-      SET embedding = ${vector}::vector,
-          "embeddingHash" = ${embeddingHash},
-          "embeddingTextHash" = ${embeddingHash},
-          "embeddingId" = ${`openai:text-embedding-3-small:${embeddingHash.slice(0, 16)}`},
-          "lastMatchedAt" = null
-      WHERE id = ${listing.id}
-    `;
-  }
-
   private getSearchTokens(query: string) {
     return [...new Set(
       query
@@ -769,6 +872,60 @@ export class ListingsService {
         .split(/\s+/)
         .filter((token) => token.length > 1 && !SEARCH_STOP_WORDS.has(token)),
     )].slice(0, 12);
+  }
+
+  private assertCompatibilityAttributes(value?: Record<string, unknown>) {
+    if (value === undefined) return;
+    const serialized = JSON.stringify(value);
+    if (serialized.length > 4_000) {
+      throw new BadRequestException('Compatibility details are too large');
+    }
+    const visit = (item: unknown, depth: number) => {
+      if (depth > 2) throw new BadRequestException('Compatibility details are too deeply nested');
+      if (Array.isArray(item)) {
+        if (item.length > 20) throw new BadRequestException('Compatibility detail lists are too long');
+        item.forEach((entry) => visit(entry, depth + 1));
+        return;
+      }
+      if (item && typeof item === 'object') {
+        const entries = Object.entries(item as Record<string, unknown>);
+        if (entries.length > 30) throw new BadRequestException('Too many compatibility details');
+        entries.forEach(([key, entry]) => {
+          if (key.length > 60) throw new BadRequestException('Compatibility detail keys are too long');
+          visit(entry, depth + 1);
+        });
+        return;
+      }
+      if (typeof item === 'string' && item.length > 200) {
+        throw new BadRequestException('A compatibility detail is too long');
+      }
+    };
+    visit(value, 0);
+  }
+
+  private encodeListingCursor(cursor: { createdAt: string; id: string }) {
+    return Buffer.from(JSON.stringify(cursor), 'utf8').toString('base64url');
+  }
+
+  private decodeListingCursor(value: string) {
+    try {
+      if (value.length > 512) throw new Error('Invalid cursor');
+      const parsed = JSON.parse(Buffer.from(value, 'base64url').toString('utf8')) as {
+        createdAt?: string;
+        id?: string;
+      };
+      if (
+        !parsed.id ||
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(parsed.id) ||
+        !parsed.createdAt ||
+        Number.isNaN(new Date(parsed.createdAt).getTime())
+      ) {
+        throw new Error('Invalid cursor');
+      }
+      return { id: parsed.id, createdAt: parsed.createdAt };
+    } catch {
+      throw new BadRequestException('Invalid listing cursor');
+    }
   }
 
   private hashGuestManagementToken(token: string) {
@@ -867,16 +1024,27 @@ export class ListingsService {
     return error instanceof Error ? error.message : 'Unknown error';
   }
 
-  private async runListingMatching(listingId: string, reason: string) {
-    const results = await Promise.allSettled([
-      this.matchingService.runMatchForListing(listingId, reason),
-      this.pairAlertsService.runMatchForListing(listingId, reason),
-    ]);
-    results.forEach((result) => {
-      if (result.status === 'rejected') {
-        this.logger.error(`Could not complete matching for listing ${listingId}`, result.reason);
-      }
-    });
+  private async markListingImagesAttached(images: string[], listingId: string) {
+    try {
+      await this.s3Service.markFilesAttached(images);
+    } catch (error) {
+      this.logger.warn(`Listing ${listingId} was saved but its image lifecycle tags could not be finalized: ${this.errorMessage(error)}`);
+    }
+  }
+
+  private async markListingImagesOrphaned(images: string[], listingId: string) {
+    if (images.length === 0) return;
+    try {
+      const references = await this.prisma.listing.findMany({
+        where: { id: { not: listingId }, images: { hasSome: images } },
+        select: { images: true },
+      });
+      const stillReferenced = new Set(references.flatMap((listing) => listing.images));
+      const unreferenced = images.filter((image) => !stillReferenced.has(image));
+      await this.s3Service.markFilesOrphaned(unreferenced);
+    } catch (error) {
+      this.logger.warn(`Listing ${listingId} image cleanup tags could not be updated: ${this.errorMessage(error)}`);
+    }
   }
 
   private assertPublicListingIntent(intent: IntentionTag) {

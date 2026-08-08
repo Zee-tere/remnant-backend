@@ -68,12 +68,7 @@ export class UploadController {
       throw new BadRequestException('No files uploaded');
     }
 
-    const urls: string[] = [];
-    for (const file of files) {
-      const url = await this.s3Service.uploadFile(file);
-      urls.push(url);
-    }
-
+    const urls = await Promise.all(files.map((file) => this.s3Service.uploadFile(file)));
     return { urls };
   }
 
@@ -92,12 +87,7 @@ export class UploadController {
       throw new BadRequestException(`Guest uploads are limited to ${MAX_GUEST_FILES} files at a time`);
     }
 
-    const urls: string[] = [];
-    for (const file of files) {
-      const url = await this.s3Service.uploadFile(file);
-      urls.push(url);
-    }
-
+    const urls = await Promise.all(files.map((file) => this.s3Service.uploadFile(file)));
     return { urls };
   }
 }

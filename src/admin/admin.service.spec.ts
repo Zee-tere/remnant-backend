@@ -20,14 +20,14 @@ describe('AdminService', () => {
 
   it('removes a listing reversibly by pausing it', async () => {
     prisma.listing.findUnique.mockResolvedValue({ id: 'listing-1' });
-    prisma.listing.update.mockResolvedValue({ id: 'listing-1', status: 'PAUSED' });
+    prisma.listing.update.mockResolvedValue({ id: 'listing-1', status: 'DELETED' });
 
     await expect(service.removeListing('listing-1')).resolves.toEqual({
       message: 'Listing removed from the public marketplace',
     });
     expect(prisma.listing.update).toHaveBeenCalledWith({
       where: { id: 'listing-1' },
-      data: { status: 'PAUSED' },
+      data: { status: 'DELETED' },
     });
   });
 });

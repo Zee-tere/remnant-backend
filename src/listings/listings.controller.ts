@@ -44,6 +44,8 @@ export class ListingsController {
     @Query('search') search?: string,
     @Query('page') page?: string,
     @Query('limit') limit?: string,
+    @Query('cursor') cursor?: string,
+    @Query('pagination') pagination?: string,
   ) {
     return this.listingsService.findAll({
       category,
@@ -52,17 +54,21 @@ export class ListingsController {
       search,
       page: page ? parseInt(page, 10) : undefined,
       limit: limit ? parseInt(limit, 10) : undefined,
+      cursor,
+      pagination,
     });
   }
 
   @Get('search')
   @Header('Cache-Control', 'no-store, max-age=0')
+  @Throttle({ default: { limit: 20, ttl: 60000 } })
   async search(
     @Query('q') query: string,
     @Query('category') category?: string,
     @Query('city') city?: string,
     @Query('intent') intent?: string,
     @Query('limit') limit?: string,
+    @Query('page') page?: string,
   ) {
     return this.listingsService.semanticSearch({
       query,
@@ -70,6 +76,7 @@ export class ListingsController {
       city,
       intent,
       limit: limit ? parseInt(limit, 10) : undefined,
+      page: page ? parseInt(page, 10) : undefined,
     });
   }
 

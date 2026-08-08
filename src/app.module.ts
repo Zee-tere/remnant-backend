@@ -20,6 +20,7 @@ import { ReportsModule } from './reports/reports.module';
 import { PairAlertsModule } from './pair-alerts/pair-alerts.module';
 import { validateEnvironment } from './config/env.validation';
 import { OutboxModule } from './outbox/outbox.module';
+import { MatchingJobsModule } from './matching/matching-jobs.module';
 
 @Module({
   imports: [
@@ -55,6 +56,7 @@ import { OutboxModule } from './outbox/outbox.module';
     ReportsModule,
     PairAlertsModule,
     OutboxModule,
+    MatchingJobsModule,
   ],
   controllers: [AppController],
   providers: [

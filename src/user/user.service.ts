@@ -1,4 +1,5 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { UpdateUserDto } from './user.dto';
 
@@ -39,7 +40,7 @@ export class UserService {
             }),
         _count: {
           select: {
-            listings: true,
+            listings: { where: { status: { not: 'DELETED' } } },
             reviewsReceived: true,
           },
         },
@@ -58,10 +59,12 @@ export class UserService {
   }
 
   async getDashboardSummary(userId: string) {
-    const [listings, activeListings, unreadAlerts, listingMatches, pairAlertMatches, unreadMessages] = await Promise.all([
-      this.prisma.listing.count({ where: { userId, intentionTag: { not: 'WANTED' } } }),
+    const [listings, activeListings, unreadAlerts, listingMatches, pairAlertMatches, unreadMessageRows] = await Promise.all([
+      this.prisma.listing.count({
+        where: { userId, status: { not: 'DELETED' }, intentionTag: { not: 'WANTED' } },
+      }),
       this.prisma.listing.count({ where: { userId, status: 'ACTIVE', intentionTag: { not: 'WANTED' } } }),
-      this.prisma.notification.count({ where: { userId, isRead: false } }),
+      this.prisma.notification.count({ where: { userId, type: 'PAIR_MATCH', isRead: false } }),
       this.prisma.match.count({
         where: {
           status: 'PENDING',
@@ -71,13 +74,18 @@ export class UserService {
       this.prisma.pairAlertMatch.count({
         where: { status: 'PENDING', pairAlert: { userId } },
       }),
-      this.prisma.conversation.count({
-        where: {
-          OR: [{ buyerId: userId }, { sellerId: userId }],
-          messages: { some: { senderId: { not: userId }, readAt: null } },
-        },
-      }),
+      this.prisma.$queryRaw<Array<{ count: number | bigint }>>(Prisma.sql`
+        SELECT COUNT(*)::integer AS count
+        FROM "Message" message
+        JOIN "ConversationParticipant" participant
+          ON participant."conversationId" = message."conversationId"
+        WHERE participant."userId" = ${userId}
+          AND message."senderId" <> ${userId}
+          AND message.sequence > participant."lastReadSequence"
+      `),
     ]);
+
+    const unreadMessages = Number(unreadMessageRows[0]?.count ?? 0);
 
     return {
       listings,
