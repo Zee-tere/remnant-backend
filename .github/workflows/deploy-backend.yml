@@ -37,8 +37,16 @@ jobs:
           MIGRATION_DIRECT_URL: ${{ secrets.DIRECT_URL }}
         run: |
           if [[ -z "$MIGRATION_DATABASE_URL" || -z "$MIGRATION_DIRECT_URL" ]]; then
-            echo "::notice::Database migrations are managed externally because dedicated migration secrets are not configured."
-            exit 0
+            FUNCTION_ENV="$(aws lambda get-function-configuration \
+              --function-name remnant-api \
+              --query 'Environment.Variables' \
+              --output json)"
+            MIGRATION_DATABASE_URL="${MIGRATION_DATABASE_URL:-$(jq -r '.DATABASE_URL // empty' <<<"$FUNCTION_ENV")}"
+            MIGRATION_DIRECT_URL="${MIGRATION_DIRECT_URL:-$(jq -r '.DIRECT_URL // .DATABASE_URL // empty' <<<"$FUNCTION_ENV")}"
+          fi
+          if [[ -z "$MIGRATION_DATABASE_URL" || -z "$MIGRATION_DIRECT_URL" ]]; then
+            echo "::error::Database migrations cannot be skipped. Configure DATABASE_URL and DIRECT_URL in repository secrets or the Lambda environment."
+            exit 1
           fi
           DATABASE_URL="$MIGRATION_DATABASE_URL"
           DIRECT_URL="$MIGRATION_DIRECT_URL"
