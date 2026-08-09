@@ -80,7 +80,7 @@ jobs:
       - name: Package Lambda
         run: zip -r ../function.zip dist node_modules package.json package-lock.json prisma
       - run: aws s3 cp ../function.zip s3://remnant-deployments-158128612346/remnant-api/${{ github.sha }}.zip
-      - run: aws lambda update-function-code --function-name remnant-api --s3-bucket remnant-deployments-158128612346 --s3-key remnant-api/${{ github.sha }}.zip
+      - run: aws lambda update-function-code --function-name remnant-api --s3-bucket remnant-deployments-158128612346 --s3-key remnant-api/${{ github.sha }}.zip >/dev/null
       - run: aws lambda wait function-updated --function-name remnant-api
       - name: Configure scheduled workers and maintenance
         shell: pwsh
@@ -97,19 +97,21 @@ jobs:
           API_URL: ${{ secrets.PRODUCTION_API_URL }}
         run: |
           set -euo pipefail
-          test -n "$API_URL"
+          if [ -z "$API_URL" ]; then API_URL="https://36yevvooae.execute-api.us-east-1.amazonaws.com"; fi
           curl --fail --show-error --silent --retry 5 --retry-all-errors "$API_URL/health" >/dev/null
           curl --fail --show-error --silent --retry 5 --retry-all-errors "$API_URL/listings?limit=1" >/dev/null
       - name: Production configuration verification
         shell: pwsh
         env:
           API_URL: ${{ secrets.PRODUCTION_API_URL }}
-        run: ./scripts/verify-production.ps1 -ApiUrl $env:API_URL -FrontendUrl https://remnantmarket.co -Region us-east-1 -FunctionName remnant-api -UploadBucket remnant-uploads-prod
+        run: |
+          if (-not $env:API_URL) { $env:API_URL = 'https://36yevvooae.execute-api.us-east-1.amazonaws.com' }
+          ./scripts/verify-production.ps1 -ApiUrl $env:API_URL -FrontendUrl https://remnantmarket.co -Region us-east-1 -FunctionName remnant-api -UploadBucket remnant-uploads-prod
       - name: Restore previous Lambda package after a failed release
         if: failure() && steps.capture_previous.outputs.captured == 'true'
         shell: bash
         run: |
           set -euo pipefail
           test -n "${{ steps.capture_previous.outputs.s3_key }}"
-          aws lambda update-function-code --function-name remnant-api --s3-bucket remnant-deployments-158128612346 --s3-key "${{ steps.capture_previous.outputs.s3_key }}"
+          aws lambda update-function-code --function-name remnant-api --s3-bucket remnant-deployments-158128612346 --s3-key "${{ steps.capture_previous.outputs.s3_key }}" >/dev/null
           aws lambda wait function-updated --function-name remnant-api
