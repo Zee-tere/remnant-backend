@@ -16,6 +16,8 @@ import {
   SignUpCommand,
   ForgotPasswordCommand,
   ConfirmForgotPasswordCommand,
+  GlobalSignOutCommand,
+  RevokeTokenCommand,
 } from '@aws-sdk/client-cognito-identity-provider';
 import { CognitoJwtVerifier } from 'aws-jwt-verify';
 import * as jwt from 'jsonwebtoken';
@@ -38,6 +40,10 @@ const SAFE_USER_SELECT = {
   trustTier: true,
   points: true,
   emailVerified: true,
+  isPublicProfile: true,
+  showStateOnProfile: true,
+  deactivatedAt: true,
+  deletionRequestedAt: true,
   createdAt: true,
   updatedAt: true,
 };
@@ -215,6 +221,7 @@ export class AuthService {
         email_verified?: boolean | string;
         identities?: string;
         'cognito:username'?: string;
+        nonce?: string;
       };
       const accessPayload = (await this.getAccessTokenVerifier().verify(dto.accessToken)) as {
         sub?: string;
@@ -224,6 +231,9 @@ export class AuthService {
 
       const cognitoSub = idPayload.sub ?? accessPayload.sub;
       if (!cognitoSub || accessPayload.sub !== cognitoSub) {
+        throw new UnauthorizedException('Sign-in could not be verified. Please try again.');
+      }
+      if (!idPayload.nonce || idPayload.nonce !== dto.nonce) {
         throw new UnauthorizedException('Sign-in could not be verified. Please try again.');
       }
 
@@ -372,6 +382,28 @@ export class AuthService {
     }
   }
 
+  async logout(accessToken?: string, refreshToken?: string) {
+    const revocations: Promise<unknown>[] = [];
+    if (accessToken) {
+      revocations.push(
+        this.cognitoClient.send(new GlobalSignOutCommand({ AccessToken: accessToken })),
+      );
+    }
+    if (refreshToken) {
+      revocations.push(
+        this.cognitoClient.send(
+          new RevokeTokenCommand({
+            ClientId: this.getCognitoClientId(),
+            Token: refreshToken,
+          }),
+        ),
+      );
+    }
+
+    await Promise.allSettled(revocations);
+    return { message: 'Signed out.' };
+  }
+
   async getProfile(userId: string) {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
@@ -428,6 +460,7 @@ export class AuthService {
     const name = claims.name?.trim() || email.split('@')[0] || 'Remnant user';
 
     if (existing?.bannedAt) throw new UnauthorizedException('This account is suspended.');
+    if (existing?.deactivatedAt) throw new UnauthorizedException('This account is deactivated.');
 
     if (!existing) {
       return this.prisma.user.create({

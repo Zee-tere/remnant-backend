@@ -1,5 +1,5 @@
 import { IsDateString, IsEnum, IsNotEmpty, IsOptional, IsString, MaxLength, ValidateIf } from 'class-validator';
-import { ListingStatus, TransactionStatus, UserRole } from '@prisma/client';
+import { ListingStatus, SupportRequestStatus, UserRole } from '@prisma/client';
 
 export enum AdminReportAction {
   DISMISS = 'DISMISS',
@@ -24,11 +24,6 @@ export class AdminListingStatusDto {
   status: ListingStatus;
 }
 
-export class AdminTransactionStatusDto {
-  @IsEnum(TransactionStatus)
-  status: TransactionStatus;
-}
-
 export class ResolveReportDto {
   @IsString()
   @MaxLength(1000)
@@ -50,4 +45,14 @@ export class AdminMessageUserDto {
   @IsNotEmpty()
   @MaxLength(1000)
   message: string;
+}
+
+export class ResolveSupportRequestDto {
+  @IsEnum(SupportRequestStatus)
+  status: SupportRequestStatus;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(2000)
+  resolution?: string;
 }

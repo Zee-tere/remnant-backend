@@ -30,8 +30,11 @@ export class MessagesController {
 
   @Post('guest')
   @Throttle({ default: { limit: 5, ttl: 60000 } })
-  startGuestConversation(@Body() dto: StartGuestConversationDto) {
-    return this.messagesService.startGuestConversation(dto);
+  startGuestConversation(
+    @Body() dto: StartGuestConversationDto,
+    @Headers('x-guest-token') token?: string,
+  ) {
+    return this.messagesService.startGuestConversation(dto, token);
   }
 
   @Get('guest/:id')
@@ -40,6 +43,11 @@ export class MessagesController {
     @Headers('x-guest-token') token?: string,
   ) {
     return this.messagesService.getGuestConversation(id, token);
+  }
+
+  @Get('guest')
+  getGuestConversations(@Headers('x-guest-token') token?: string) {
+    return this.messagesService.getGuestConversations(token);
   }
 
   @Post('guest/:id/messages')

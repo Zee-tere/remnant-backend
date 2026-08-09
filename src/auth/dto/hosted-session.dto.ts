@@ -1,4 +1,4 @@
-import { IsNotEmpty, IsOptional, IsString } from 'class-validator';
+import { IsNotEmpty, IsOptional, IsString, MaxLength } from 'class-validator';
 
 export class HostedSessionDto {
   @IsNotEmpty()
@@ -12,4 +12,9 @@ export class HostedSessionDto {
   @IsOptional()
   @IsString()
   refreshToken?: string;
+
+  @IsNotEmpty()
+  @IsString()
+  @MaxLength(256)
+  nonce: string;
 }

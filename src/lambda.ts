@@ -8,6 +8,11 @@ import { isAllowedOrigin, parseOriginList } from './config/origin';
 import { INestApplication } from '@nestjs/common';
 import { OutboxRelayService } from './outbox/outbox-relay.service';
 import { MatchingJobsService } from './matching/matching-jobs.service';
+import { MatchingService } from './matching/matching.service';
+import { UploadService } from './upload/upload.service';
+import { UserService } from './user/user.service';
+import { ListingsService } from './listings/listings.service';
+import { requestContext } from './config/request-context';
 
 let server: Handler;
 let nestApp: INestApplication;
@@ -42,6 +47,7 @@ async function bootstrapApp(): Promise<INestApplication> {
     ...(isProduction ? [] : ['http://localhost:3000', 'http://127.0.0.1:3000']),
   );
 
+  app.use(requestContext(allowedOrigins, !isProduction));
   app.enableCors({
     origin: (origin, callback) => {
       if (
@@ -59,8 +65,9 @@ async function bootstrapApp(): Promise<INestApplication> {
       'Content-Type',
       'Authorization',
       'X-Guest-Token',
-      'X-Paystack-Signature',
+      'X-Request-ID',
     ],
+    exposedHeaders: ['X-Request-ID'],
     credentials: true,
   });
 
@@ -105,6 +112,21 @@ export const handler: Handler = async (
   ) {
     const app = await bootstrapApp();
     return app.get(MatchingJobsService).processPending(25);
+  }
+
+  if (
+    event.source === 'aws.events' &&
+    event['detail-type'] === 'RemnantMaintenance'
+  ) {
+    const app = await bootstrapApp();
+    const [queued, uploads, deletions, listings] = await Promise.all([
+      app.get(MatchingService).runDailyBackfill(),
+      app.get(UploadService).cleanupPendingUploads(),
+      app.get(UserService).purgeExpiredDeletionRequests(),
+      app.get(ListingsService).expireListings(),
+    ]);
+    const processed = await app.get(MatchingJobsService).processPending(25);
+    return { ...queued, processed, uploads, deletions, listings };
   }
 
   context.callbackWaitsForEmptyEventLoop = false;

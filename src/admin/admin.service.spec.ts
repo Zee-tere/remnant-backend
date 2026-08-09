@@ -7,7 +7,7 @@ describe('AdminService', () => {
     listing: { findUnique: jest.fn(), update: jest.fn() },
   };
   const notifications = { createNotification: jest.fn() };
-  const service = new AdminService(prisma as never, {} as never, notifications as never);
+  const service = new AdminService(prisma as never, notifications as never);
 
   beforeEach(() => jest.clearAllMocks());
 

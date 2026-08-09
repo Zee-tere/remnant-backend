@@ -118,11 +118,12 @@ export class CognitoAuthService {
   }
 
   private toAuthenticatedUser(
-    user: { id: string; email: string; name: string; role: string; bannedAt?: Date | null },
+    user: { id: string; email: string; name: string; role: string; bannedAt?: Date | null; deactivatedAt?: Date | null },
     cognitoSub: string,
     username?: string,
   ): AuthenticatedUser {
     if (user.bannedAt) throw new UnauthorizedException('This account is suspended.');
+    if (user.deactivatedAt) throw new UnauthorizedException('This account is deactivated.');
     return {
       sub: user.id,
       userId: user.id,

@@ -1,13 +1,13 @@
 {
   "Rules": [
     {
-      "ID": "expire-unclaimed-listing-uploads",
-      "Status": "Enabled",
+      "ID": "do-not-expire-db-managed-pending-uploads",
+      "Status": "Disabled",
       "Filter": {
         "And": {
           "Prefix": "listings/",
           "Tags": [
-            { "Key": "remnant-status", "Value": "temporary" }
+            { "Key": "remnant-status", "Value": "pending" }
           ]
         }
       },

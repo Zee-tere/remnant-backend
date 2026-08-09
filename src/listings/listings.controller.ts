@@ -31,8 +31,11 @@ export class ListingsController {
 
   @Post('guest')
   @Throttle({ default: { limit: 4, ttl: 60000 } })
-  async createGuest(@Body() dto: CreateGuestListingDto) {
-    return this.listingsService.createGuest(dto);
+  async createGuest(
+    @Body() dto: CreateGuestListingDto,
+    @Headers('x-guest-token') token?: string,
+  ) {
+    return this.listingsService.createGuest(dto, token);
   }
 
   @Get()
@@ -114,13 +117,6 @@ export class ListingsController {
     return this.listingsService.findSimilar(id, limit ? parseInt(limit, 10) : undefined);
   }
 
-  @Get(':id/contact')
-  @Header('Cache-Control', 'no-store, max-age=0')
-  @Throttle({ default: { limit: 20, ttl: 60000 } })
-  async getGuestContact(@Param('id') id: string) {
-    return this.listingsService.getGuestContact(id);
-  }
-
   @Get(':id/guest-manage')
   @Header('Cache-Control', 'no-store, max-age=0')
   @Throttle({ default: { limit: 20, ttl: 60000 } })
@@ -135,7 +131,7 @@ export class ListingsController {
     @Headers('x-guest-token') token: string | undefined,
     @Body() dto: UpdateGuestListingStatusDto,
   ) {
-    return this.listingsService.updateGuestStatus(id, token, dto.status);
+    return this.listingsService.updateGuestStatus(id, token, dto.status, dto.version);
   }
 
   @Get(':id')

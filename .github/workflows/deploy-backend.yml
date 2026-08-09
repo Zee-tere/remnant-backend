@@ -1,66 +1,105 @@
-name: Deploy Remnant Backend
+name: Verify and deploy Remnant backend
+
 on:
+  pull_request:
   push:
     branches: [main]
   workflow_dispatch:
+
 permissions:
-  id-token: write
   contents: read
+
 concurrency:
-  group: remnant-backend-production
-  cancel-in-progress: true
+  group: remnant-backend-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
-  deploy:
+  verify:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Setup Node
-        uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 20
           cache: npm
-      - name: Install dependencies
-        run: npm ci
-      - name: Build
-        run: npm run build
-      - name: Generate Prisma Client
-        run: npx prisma generate
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
+      - run: npm ci
+      - run: npm run audit:prod
+      - run: npm run db:generate
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test -- --runInBand
+      - run: npm run build
+
+  deploy:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    environment: production
+    concurrency:
+      group: remnant-backend-production
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run db:generate
+      - uses: aws-actions/configure-aws-credentials@ff717079ee2060e4bcee96c4779b553acc87447c # v4
         with:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           aws-region: us-east-1
+      - name: Capture currently deployed Lambda package
+        shell: bash
+        run: |
+          set -euo pipefail
+          code_url="$(aws lambda get-function --function-name remnant-api --query 'Code.Location' --output text)"
+          curl --fail --show-error --silent "$code_url" --output ../previous-function.zip
       - name: Apply database migrations
         env:
-          MIGRATION_DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: |
-          if [[ -z "$MIGRATION_DATABASE_URL" ]]; then
-            FUNCTION_ENV="$(aws lambda get-function-configuration \
-              --function-name remnant-api \
-              --query 'Environment.Variables' \
-              --output json)"
-            MIGRATION_DATABASE_URL="${MIGRATION_DATABASE_URL:-$(jq -r '.DATABASE_URL // empty' <<<"$FUNCTION_ENV")}"
-          fi
-          if [[ -z "$MIGRATION_DATABASE_URL" ]]; then
-            echo "::error::Database migrations cannot be skipped. Configure DATABASE_URL in repository secrets or the Lambda environment."
-            exit 1
-          fi
-          DATABASE_URL="$MIGRATION_DATABASE_URL"
-          echo "::add-mask::$DATABASE_URL"
-          export DATABASE_URL
+          set -euo pipefail
+          test -n "$DATABASE_URL"
           npm run db:deploy:pooler
-      - name: Prune dev dependencies
-        run: npm prune --omit=dev
-      - name: Create deployment package
+      - run: npm prune --omit=dev
+      - name: Package Lambda
         run: zip -r ../function.zip dist node_modules package.json package-lock.json prisma
-      - name: Upload to S3
-        run: aws s3 cp ../function.zip s3://remnant-deployments-158128612346/remnant-api/function.zip
-      - name: Update Lambda function
+      - run: aws s3 cp ../function.zip s3://remnant-deployments-158128612346/remnant-api/${{ github.sha }}.zip
+      - run: aws lambda update-function-code --function-name remnant-api --s3-bucket remnant-deployments-158128612346 --s3-key remnant-api/${{ github.sha }}.zip
+      - run: aws lambda wait function-updated --function-name remnant-api
+      - name: Configure scheduled workers and maintenance
+        shell: pwsh
+        run: ./scripts/configure-production-schedules.ps1 -Region us-east-1 -FunctionName remnant-api
+      - name: Configure alarms and log retention
+        shell: pwsh
+        env:
+          ALARM_TOPIC_ARN: ${{ secrets.ALARM_TOPIC_ARN }}
         run: |
-          aws lambda update-function-code \
-            --function-name remnant-api \
-            --s3-bucket remnant-deployments-158128612346 \
-            --s3-key remnant-api/function.zip
-      - name: Wait for update to complete
-        run: aws lambda wait function-updated --function-name remnant-api
+          if (-not $env:ALARM_TOPIC_ARN) { throw 'ALARM_TOPIC_ARN production secret is required' }
+          ./scripts/configure-production-alarms.ps1 -NotificationTopicArn $env:ALARM_TOPIC_ARN -Region us-east-1 -FunctionName remnant-api -ApiId 36yevvooae
+      - name: API smoke check
+        env:
+          API_URL: ${{ secrets.PRODUCTION_API_URL }}
+        run: |
+          set -euo pipefail
+          test -n "$API_URL"
+          curl --fail --show-error --silent --retry 5 --retry-all-errors "$API_URL/health" >/dev/null
+          curl --fail --show-error --silent --retry 5 --retry-all-errors "$API_URL/listings?limit=1" >/dev/null
+      - name: Production configuration verification
+        shell: pwsh
+        env:
+          API_URL: ${{ secrets.PRODUCTION_API_URL }}
+        run: ./scripts/verify-production.ps1 -ApiUrl $env:API_URL -FrontendUrl https://remnantmarket.co -Region us-east-1 -FunctionName remnant-api -UploadBucket remnant-uploads-prod
+      - name: Restore previous Lambda package after a failed release
+        if: failure()
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s ../previous-function.zip
+          aws lambda update-function-code --function-name remnant-api --zip-file fileb://../previous-function.zip
+          aws lambda wait function-updated --function-name remnant-api

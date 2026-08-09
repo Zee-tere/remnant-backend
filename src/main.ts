@@ -3,6 +3,7 @@ import { AppModule } from './app.module';
 import { ValidationPipe } from '@nestjs/common';
 import helmet from 'helmet';
 import { isAllowedOrigin, parseOriginList } from './config/origin';
+import { requestContext } from './config/request-context';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, { rawBody: true });
@@ -34,6 +35,7 @@ async function bootstrap() {
     ...(isProduction ? [] : ['http://localhost:3000', 'http://127.0.0.1:3000']),
   );
 
+  app.use(requestContext(allowedOrigins, !isProduction));
   app.enableCors({
     origin: (origin, callback) => {
       if (
@@ -51,12 +53,13 @@ async function bootstrap() {
       'Content-Type',
       'Authorization',
       'X-Guest-Token',
-      'X-Paystack-Signature',
+      'X-Request-ID',
     ],
+    exposedHeaders: ['X-Request-ID'],
     credentials: true,
   });
 
   await app.listen(process.env.PORT ?? 3001, '0.0.0.0');
   console.log(`[App] Running on port ${process.env.PORT ?? 3001}`);
 }
-bootstrap();
+void bootstrap();

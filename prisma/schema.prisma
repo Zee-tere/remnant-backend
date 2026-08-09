@@ -108,11 +108,19 @@ enum MatchingJobStatus {
 enum ReportTarget {
   LISTING
   USER
+  CONVERSATION
+  MESSAGE
 }
 
 enum ReportStatus {
   OPEN
   REVIEWED
+  RESOLVED
+}
+
+enum SupportRequestStatus {
+  OPEN
+  IN_PROGRESS
   RESOLVED
 }
 
@@ -130,8 +138,12 @@ model User {
   trustTier     TrustTier @default(NEW)
   points        Int       @default(0)
   emailVerified Boolean   @default(false)
+  isPublicProfile Boolean @default(false)
+  showStateOnProfile Boolean @default(false)
   googleId      String?   @unique
   bannedAt      DateTime?
+  deactivatedAt DateTime?
+  deletionRequestedAt DateTime?
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
@@ -149,6 +161,7 @@ model User {
   pairAlerts                 PairAlert[]
   conversationParticipations ConversationParticipant[]
   matchParticipantStates     MatchParticipantState[]
+  uploads                    Upload[]
 
   @@index([city])
 }
@@ -167,6 +180,7 @@ model Listing {
   compatibilityAttributes  Json?
   isGuestListing           Boolean                      @default(false)
   guestContact             Json?
+  clientRequestId          String?
   embedding                Unsupported("vector(1536)")?
   embeddingHash            String?
   embeddingId              String?
@@ -194,9 +208,37 @@ model Listing {
   transactions     Transaction[]
   savedBy          SavedListing[]
   pairAlertMatches PairAlertMatch[]
+  uploads          Upload[]
 
   @@index([status, createdAt])
   @@index([status, category, city, createdAt])
+  @@unique([userId, clientRequestId])
+}
+
+enum UploadStatus {
+  PENDING
+  ATTACHED
+  DELETED
+}
+
+model Upload {
+  id         String       @id @default(uuid())
+  ownerId    String
+  owner      User         @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  listingId  String?
+  listing    Listing?     @relation(fields: [listingId], references: [id], onDelete: SetNull)
+  s3Key      String       @unique
+  status     UploadStatus @default(PENDING)
+  byteSize   Int
+  mimeType   String
+  attachedAt DateTime?
+  deletedAt  DateTime?
+  createdAt  DateTime     @default(now())
+  updatedAt  DateTime     @updatedAt
+
+  @@index([ownerId, status, createdAt])
+  @@index([listingId])
+  @@index([status, createdAt])
 }
 
 model PairAlert {
@@ -494,4 +536,19 @@ model Report {
   status     ReportStatus @default(OPEN)
   resolution String?
   createdAt  DateTime     @default(now())
+}
+
+model SupportRequest {
+  id        String               @id @default(uuid())
+  name      String
+  email     String
+  topic     String
+  message   String
+  status    SupportRequestStatus @default(OPEN)
+  resolution String?
+  createdAt DateTime             @default(now())
+  updatedAt DateTime             @updatedAt
+
+  @@index([status, createdAt])
+  @@index([email, createdAt])
 }

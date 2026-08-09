@@ -2,6 +2,41 @@ import { UserService } from './user.service';
 import { PrismaService } from '../prisma/prisma.service';
 
 describe('UserService', () => {
+  it.each([
+    { isPublicProfile: false, showStateOnProfile: false, expectedCity: undefined },
+    { isPublicProfile: true, showStateOnProfile: false, expectedCity: null },
+    { isPublicProfile: true, showStateOnProfile: true, expectedCity: 'Lagos' },
+  ])('enforces persisted public profile settings: %o', async ({ isPublicProfile, showStateOnProfile, expectedCity }) => {
+    const prisma = {
+      user: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'user-1',
+          name: 'Ada',
+          avatarUrl: null,
+          bio: 'Repair enthusiast',
+          city: 'Lagos',
+          trustTier: 'NEW',
+          points: 0,
+          createdAt: new Date(),
+          isPublicProfile,
+          showStateOnProfile,
+          _count: { listings: 1, reviewsReceived: 0 },
+        }),
+      },
+    };
+    const service = new UserService(prisma as unknown as PrismaService);
+
+    if (!isPublicProfile) {
+      await expect(service.getUserById('user-1')).rejects.toThrow('User not found');
+      return;
+    }
+
+    const result = await service.getUserById('user-1');
+    expect(result).not.toHaveProperty('isPublicProfile');
+    expect(result).not.toHaveProperty('showStateOnProfile');
+    expect(result.city).toBe(expectedCity);
+  });
+
   it('returns dashboard counts without loading full records', async () => {
     const prisma = {
       listing: {

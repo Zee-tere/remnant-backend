@@ -80,19 +80,15 @@ export class MarkConversationReadDto {
 }
 
 export class StartGuestConversationDto extends StartConversationDto {
+  @IsUUID()
+  clientRequestId: string;
+
   @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
   @IsString()
   @IsNotEmpty()
   @MinLength(2)
   @MaxLength(80)
   name: string;
-
-  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
-  @IsString()
-  @IsNotEmpty()
-  @MinLength(5)
-  @MaxLength(180)
-  contact: string;
 
   @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
   @IsString()

@@ -100,7 +100,7 @@ export class S3Service {
       CacheControl: 'public, max-age=31536000, immutable',
       ContentDisposition: 'inline',
       ServerSideEncryption: 'AES256' as const,
-      Tagging: 'remnant-status=temporary',
+      Tagging: 'remnant-status=pending',
     };
 
     try {

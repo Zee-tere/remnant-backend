@@ -1,12 +1,16 @@
-import { Controller, Get, Put, Param, Body, Req, UseGuards } from '@nestjs/common';
+import { Controller, Delete, Get, Headers, Put, Param, Body, Req, UseGuards } from '@nestjs/common';
 import { UserService } from './user.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { Request } from 'express';
 import { UpdateUserDto } from './user.dto';
+import { GuestAccessService } from '../auth/guest-access.service';
 
 @Controller('users')
 export class UserController {
-  constructor(private readonly userService: UserService) {}
+  constructor(
+    private readonly userService: UserService,
+    private readonly guestAccessService: GuestAccessService,
+  ) {}
 
   @Get('me')
   @UseGuards(JwtAuthGuard)
@@ -37,6 +41,24 @@ export class UserController {
   async getMyAchievements(@Req() req: Request) {
     const user = req.user as { sub: string };
     return this.userService.getAchievements(user.sub);
+  }
+
+  @Get('me/export')
+  @UseGuards(JwtAuthGuard)
+  exportMyData(@Req() req: Request) {
+    return this.userService.exportUserData(req.user!.userId);
+  }
+
+  @Delete('me')
+  @UseGuards(JwtAuthGuard)
+  requestMyDeletion(@Req() req: Request) {
+    return this.userService.requestDeletion(req.user!.userId);
+  }
+
+  @Delete('guest/me')
+  requestGuestDeletion(@Headers('x-guest-token') token?: string) {
+    const guest = this.guestAccessService.verifyIdentityToken(token);
+    return this.userService.requestDeletion(guest.userId);
   }
 
   @Get(':id')

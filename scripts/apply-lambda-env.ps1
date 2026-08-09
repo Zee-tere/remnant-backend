@@ -21,9 +21,7 @@ $requiredKeys = @(
   "EMAIL_FROM",
   "OPENAI_API_KEY",
   "SUPABASE_URL",
-  "SUPABASE_JWT_SECRET",
-  "ESCROW_ENABLED",
-  "PAYSTACK_ENABLED"
+  "SUPABASE_JWT_SECRET"
 )
 
 if (-not (Test-Path -LiteralPath $EnvFile)) {
@@ -58,12 +56,8 @@ if ($variables["GUEST_ACCESS_SECRET"].Length -lt 32) {
   throw "GUEST_ACCESS_SECRET must contain at least 32 characters"
 }
 
-if ($variables["PAYSTACK_ENABLED"] -eq "true") {
-  foreach ($key in @("PAYSTACK_SECRET_KEY")) {
-    if (-not $variables.ContainsKey($key) -or [string]::IsNullOrWhiteSpace($variables[$key])) {
-      throw "$key is required when PAYSTACK_ENABLED=true"
-    }
-  }
+if ($variables["ESCROW_ENABLED"] -eq "true" -or $variables["PAYSTACK_ENABLED"] -eq "true") {
+  throw "Payments and escrow must remain disabled for this release"
 }
 
 $placeholders = $variables.GetEnumerator() |

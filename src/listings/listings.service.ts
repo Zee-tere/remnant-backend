@@ -1,14 +1,15 @@
-import { Injectable, NotFoundException, ForbiddenException, Logger, BadRequestException } from '@nestjs/common';
+import { Injectable, NotFoundException, ForbiddenException, Logger, BadRequestException, ConflictException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { CreateGuestListingDto, CreateListingDto, GuestContactDto, UpdateListingDto } from './listings.dto';
-import { Prisma } from '@prisma/client';
-import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'crypto';
+import { CreateGuestListingDto, CreateListingDto, UpdateListingDto } from './listings.dto';
+import { ListingStatus, Prisma } from '@prisma/client';
+import { createHash, randomUUID, timingSafeEqual } from 'crypto';
 import { S3Service } from '../utils/s3.service';
 import { IntentionTag } from '@prisma/client';
 import { NIGERIAN_STATES } from '../config/nigeria-locations';
 import { LISTING_CATEGORIES } from '../config/listing-taxonomy';
 import { MatchingJobsService } from '../matching/matching-jobs.service';
 import { EmbeddingService } from '../matching/embedding.service';
+import { GuestAccessService } from '../auth/guest-access.service';
 
 const listingCardSelect = {
   id: true,
@@ -62,6 +63,7 @@ export class ListingsService {
     private s3Service: S3Service,
     private matchingJobsService: MatchingJobsService,
     private embeddingService: EmbeddingService,
+    private guestAccessService: GuestAccessService,
   ) {}
 
   private generateSlug(title: string): string {
@@ -79,9 +81,14 @@ export class ListingsService {
     this.assertPublicListingIntent(dto.intentionTag);
     this.assertManagedImages(dto.images);
     this.assertCompatibilityAttributes(dto.compatibilityAttributes);
+    this.assertPrice(dto.intentionTag, dto.price);
+    const existing = await this.findIdempotentListing(userId, dto.clientRequestId);
+    if (existing) return this.withReadableImages(existing);
     const slug = this.generateSlug(dto.title);
+    const listingId = randomUUID();
 
     const data: Prisma.ListingCreateInput = {
+      id: listingId,
       user: { connect: { id: userId } },
       title: dto.title,
       description: dto.description,
@@ -93,69 +100,83 @@ export class ListingsService {
       compatibilityAttributes: dto.compatibilityAttributes as Prisma.InputJsonValue,
       price: dto.price ? new Prisma.Decimal(dto.price) : null,
       city: dto.city,
-      images: dto.images || [],
+      images: dto.images,
+      clientRequestId: dto.clientRequestId,
+      expiresAt: this.listingExpiryDate(),
     };
 
-    const listing = await this.prisma.$transaction(async (transaction) => {
-      const created = await transaction.listing.create({
-        data,
-        include: { user: { select: { id: true, name: true, avatarUrl: true, trustTier: true } } },
+    try {
+      const listing = await this.prisma.$transaction(async (transaction) => {
+        const created = await transaction.listing.create({
+          data,
+          include: { user: { select: { id: true, name: true, avatarUrl: true, trustTier: true } } },
+        });
+        await this.attachUploads(transaction, userId, dto.uploadIds, dto.images, listingId);
+        await this.matchingJobsService.enqueueListing(transaction, created.id, created.version, 'listing_created');
+        return created;
       });
-      await this.matchingJobsService.enqueueListing(transaction, created.id, created.version, 'listing_created');
-      return created;
-    });
-    await this.markListingImagesAttached(listing.images, listing.id);
-    void this.notifyIndexNow(listing.slug);
-    return this.withReadableImages(listing);
+      void this.finalizeImageTags(listing.images, listing.id);
+      void this.notifyIndexNow(listing.slug);
+      return this.withReadableImages(listing);
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+        const duplicate = await this.findIdempotentListing(userId, dto.clientRequestId);
+        if (duplicate) return this.withReadableImages(duplicate);
+      }
+      throw error;
+    }
   }
 
-  async createGuest(dto: CreateGuestListingDto) {
+  async createGuest(dto: CreateGuestListingDto, token?: string) {
+    const guest = this.guestAccessService.verifyIdentityToken(token);
     this.assertPublicListingIntent(dto.intentionTag);
     this.assertManagedImages(dto.images);
     this.assertCompatibilityAttributes(dto.compatibilityAttributes);
-    const guestContact = this.normalizeGuestContact(dto.guestContact);
+    this.assertPrice(dto.intentionTag, dto.price);
+    const existing = await this.findIdempotentListing(guest.userId, dto.clientRequestId);
+    if (existing) {
+      return { ...(await this.withReadableImages(existing)), managementToken: token };
+    }
     const slug = this.generateSlug(dto.title);
-    const managementToken = randomBytes(32).toString('hex');
-    const guestManageTokenHash = this.hashGuestManagementToken(managementToken);
+    const listingId = randomUUID();
 
-    const listing = await this.prisma.$transaction(async (transaction) => {
-      const created = await transaction.listing.create({
-        data: {
-        user: {
-          create: {
-            email: `guest-${randomUUID()}@guest.remnant.local`,
-            name: 'Guest',
-            emailVerified: false,
+    try {
+      const listing = await this.prisma.$transaction(async (transaction) => {
+        const created = await transaction.listing.create({
+          data: {
+            id: listingId,
+            user: { connect: { id: guest.userId } },
+            title: dto.title,
+            description: dto.description,
+            slug,
+            category: dto.category,
+            condition: dto.condition,
+            intentionTag: dto.intentionTag,
+            pairingKeyword: dto.pairingKeyword,
+            compatibilityAttributes: dto.compatibilityAttributes as Prisma.InputJsonValue,
+            price: dto.price ? new Prisma.Decimal(dto.price) : null,
+            city: dto.city,
+            images: dto.images,
+            isGuestListing: true,
+            clientRequestId: dto.clientRequestId,
+            expiresAt: this.listingExpiryDate(),
           },
-        },
-        title: dto.title,
-        description: dto.description,
-        slug,
-        category: dto.category,
-        condition: dto.condition,
-        intentionTag: dto.intentionTag,
-        pairingKeyword: dto.pairingKeyword,
-        compatibilityAttributes: dto.compatibilityAttributes as Prisma.InputJsonValue,
-        price: dto.price ? new Prisma.Decimal(dto.price) : null,
-        city: dto.city,
-        images: dto.images || [],
-        isGuestListing: true,
-        guestContact: {
-          ...guestContact,
-          manageTokenHash: guestManageTokenHash,
-        } as Prisma.InputJsonValue,
-        },
-        include: { user: { select: { id: true, name: true, avatarUrl: true, trustTier: true } } },
+          include: { user: { select: { id: true, name: true, avatarUrl: true, trustTier: true } } },
+        });
+        await this.attachUploads(transaction, guest.userId, dto.uploadIds, dto.images, listingId);
+        await this.matchingJobsService.enqueueListing(transaction, created.id, created.version, 'guest_listing_created');
+        return created;
       });
-      await this.matchingJobsService.enqueueListing(transaction, created.id, created.version, 'guest_listing_created');
-      return created;
-    });
-    await this.markListingImagesAttached(listing.images, listing.id);
-    void this.notifyIndexNow(listing.slug);
-    return {
-      ...(await this.withReadableImages(listing)),
-      managementToken,
-    };
+      void this.finalizeImageTags(listing.images, listing.id);
+      void this.notifyIndexNow(listing.slug);
+      return { ...(await this.withReadableImages(listing)), managementToken: token };
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+        const duplicate = await this.findIdempotentListing(guest.userId, dto.clientRequestId);
+        if (duplicate) return { ...(await this.withReadableImages(duplicate)), managementToken: token };
+      }
+      throw error;
+    }
   }
 
   async getGuestManagement(id: string, token?: string) {
@@ -165,62 +186,53 @@ export class ListingsService {
       title: listing.title,
       slug: listing.slug,
       status: listing.status,
+      version: listing.version,
       image: (await this.s3Service.getReadableUrls(listing.images.slice(0, 1)))[0] ?? null,
     };
   }
 
-  async updateGuestStatus(id: string, token: string | undefined, status: 'PAUSED' | 'COMPLETED') {
+  async updateGuestStatus(
+    id: string,
+    token: string | undefined,
+    status: 'ACTIVE' | 'PAUSED' | 'COMPLETED',
+    version: number,
+  ) {
     const listing = await this.getVerifiedGuestListing(id, token);
-    const updated = await this.prisma.listing.update({
-      where: { id: listing.id },
-      data: { status },
-      select: { id: true, title: true, slug: true, status: true },
+    if (listing.version !== version) {
+      throw new ConflictException('This listing changed. Refresh before updating it.');
+    }
+    this.assertStatusTransition(listing.status, status);
+    const changed = await this.prisma.listing.updateMany({
+      where: { id: listing.id, version },
+      data: {
+        status,
+        version: { increment: 1 },
+        ...(status === 'ACTIVE' ? { expiresAt: this.listingExpiryDate() } : {}),
+      },
     });
+    if (changed.count !== 1) throw new ConflictException('This listing changed. Refresh before updating it.');
+    const updated = await this.prisma.listing.findUnique({
+      where: { id: listing.id },
+      select: { id: true, title: true, slug: true, status: true, version: true },
+    });
+    if (!updated) throw new NotFoundException('Guest listing not found');
     void this.notifyIndexNow(listing.slug);
     return {
       ...updated,
       message: status === 'COMPLETED'
         ? 'Listing marked as sold and removed from the marketplace'
-        : 'Listing removed from the marketplace',
+        : status === 'ACTIVE'
+          ? 'Listing published in the marketplace'
+          : 'Listing removed from the marketplace',
     };
   }
 
-  async getGuestContact(id: string) {
-    const listing = await this.prisma.listing.findFirst({
-      where: { id, status: 'ACTIVE' },
-      select: {
-        isGuestListing: true,
-        guestContact: true,
-        compatibilityAttributes: true,
-      },
+  async expireListings() {
+    const result = await this.prisma.listing.updateMany({
+      where: { status: 'ACTIVE', expiresAt: { lte: new Date() } },
+      data: { status: 'EXPIRED', version: { increment: 1 } },
     });
-    if (!listing) throw new NotFoundException('Listing not found');
-
-    const legacyGuestListing = Boolean(
-      listing.compatibilityAttributes &&
-      typeof listing.compatibilityAttributes === 'object' &&
-      !Array.isArray(listing.compatibilityAttributes) &&
-      (listing.compatibilityAttributes as Record<string, unknown>).guestListing,
-    );
-    if (!listing.isGuestListing && !legacyGuestListing) {
-      throw new BadRequestException('This seller uses Remnant messages');
-    }
-
-    if (!listing.guestContact || typeof listing.guestContact !== 'object' || Array.isArray(listing.guestContact)) {
-      throw new NotFoundException('This guest seller has not added contact details');
-    }
-
-    const contact = listing.guestContact as Record<string, unknown>;
-    const methods = {
-      phone: typeof contact.phone === 'string' ? contact.phone : undefined,
-      email: typeof contact.email === 'string' ? contact.email : undefined,
-      telegram: typeof contact.telegram === 'string' ? contact.telegram : undefined,
-    };
-    if (!methods.phone && !methods.email && !methods.telegram) {
-      throw new NotFoundException('This guest seller has not added contact details');
-    }
-
-    return methods;
+    return { expired: result.count };
   }
 
   async findAll(filters?: {
@@ -429,7 +441,7 @@ export class ListingsService {
         .slice(0, limit)
         .map((item) => item.id);
       if (rankedIds.length === 0) throw new Error('No embedded candidates');
-    } catch (error) {
+    } catch {
       this.logger.warn(`Vector ranking unavailable for listing ${id}; using text fallback.`);
       const candidates = await this.prisma.listing.findMany({
         where: {
@@ -479,6 +491,16 @@ export class ListingsService {
     const listing = await this.prisma.listing.findUnique({ where: { id } });
     if (!listing) throw new NotFoundException(`Listing not found`);
     if (listing.userId !== userId) throw new ForbiddenException('Not your listing');
+    if (listing.version !== dto.version) {
+      throw new ConflictException('This listing changed in another session. Refresh before saving again.');
+    }
+    this.assertStatusTransition(listing.status, dto.status);
+    if (listing.status === 'COMPLETED' && Object.keys(dto).some((key) => !['version', 'status'].includes(key))) {
+      throw new ConflictException('Completed listings cannot be edited');
+    }
+    if ((dto.images === undefined) !== (dto.uploadIds === undefined)) {
+      throw new BadRequestException('Images and upload references must be submitted together');
+    }
 
     const data: Prisma.ListingUpdateInput = {};
     if (dto.title !== undefined) data.title = dto.title;
@@ -493,21 +515,48 @@ export class ListingsService {
     if (dto.price !== undefined) data.price = dto.price ? new Prisma.Decimal(dto.price) : null;
     if (dto.city !== undefined) data.city = dto.city;
     if (dto.images !== undefined) data.images = dto.images;
+    if (dto.status !== undefined) data.status = dto.status;
+    if (dto.status === 'ACTIVE') data.expiresAt = this.listingExpiryDate();
 
     data.version = { increment: 1 };
     const updated = await this.prisma.$transaction(async (transaction) => {
-      const row = await transaction.listing.update({
-        where: { id },
+      const changed = await transaction.listing.updateMany({
+        where: { id, userId, version: dto.version },
         data,
+      });
+      if (changed.count !== 1) {
+        throw new ConflictException('This listing changed in another session. Refresh before saving again.');
+      }
+
+      if (dto.images !== undefined && dto.uploadIds !== undefined) {
+        const newImages = dto.images.filter((image) => !listing.images.includes(image));
+        if (newImages.length > 0 || dto.uploadIds.length > 0) {
+          await this.attachUploads(transaction, userId, dto.uploadIds, newImages, id);
+        }
+        const removedKeys = listing.images
+          .filter((image) => !dto.images!.includes(image))
+          .map((image) => this.s3Service.getObjectKey(image))
+          .filter((key): key is string => Boolean(key));
+        if (removedKeys.length > 0) {
+          await transaction.upload.updateMany({
+            where: { listingId: id, s3Key: { in: removedKeys }, status: 'ATTACHED' },
+            data: { listingId: null, status: 'PENDING', attachedAt: null },
+          });
+        }
+      }
+
+      const row = await transaction.listing.findUnique({
+        where: { id },
         include: { user: { select: { id: true, name: true, avatarUrl: true, trustTier: true } } },
       });
+      if (!row) throw new NotFoundException('Listing not found');
       await this.matchingJobsService.enqueueListing(transaction, row.id, row.version, 'listing_updated');
       return row;
     });
     if (dto.images !== undefined) {
       const removedImages = listing.images.filter((image) => !dto.images?.includes(image));
       await Promise.all([
-        this.markListingImagesAttached(updated.images, updated.id),
+        this.finalizeImageTags(updated.images, updated.id),
         this.markListingImagesOrphaned(removedImages, updated.id),
       ]);
     }
@@ -520,10 +569,17 @@ export class ListingsService {
     if (!listing) throw new NotFoundException(`Listing not found`);
     if (listing.userId !== userId) throw new ForbiddenException('Not your listing');
 
-    await this.prisma.listing.update({
-      where: { id },
-      data: { status: 'DELETED' },
-    });
+    await this.prisma.$transaction([
+      this.prisma.listing.update({
+        where: { id },
+        data: { status: 'DELETED', version: { increment: 1 }, images: [] },
+      }),
+      this.prisma.upload.updateMany({
+        where: { listingId: id, status: 'ATTACHED' },
+        data: { listingId: null, status: 'PENDING', attachedAt: null },
+      }),
+    ]);
+    void this.markListingImagesOrphaned(listing.images, listing.id);
     void this.notifyIndexNow(listing.slug);
     return { message: 'Listing deleted' };
   }
@@ -778,43 +834,6 @@ export class ListingsService {
     } as T;
   }
 
-  private normalizeGuestContact(contact: GuestContactDto) {
-    const phone = contact.phone?.trim();
-    const email = contact.email?.trim().toLowerCase();
-    const telegram = contact.telegram?.trim();
-
-    if (phone) {
-      const digitCount = phone.replace(/\D/g, '').length;
-      if (digitCount < 7 || digitCount > 15) {
-        throw new BadRequestException('Enter a valid phone number with 7 to 15 digits');
-      }
-    }
-
-    if (telegram) {
-      let url: URL;
-      try {
-        url = new URL(telegram);
-      } catch {
-        throw new BadRequestException('Enter a valid Telegram link');
-      }
-      const host = url.hostname.toLowerCase();
-      const username = url.pathname.replace(/^\//, '').replace(/\/$/, '');
-      if (url.protocol !== 'https:' || !['t.me', 'www.t.me'].includes(host) || !/^[a-zA-Z0-9_]{5,32}$/.test(username)) {
-        throw new BadRequestException('Use a Telegram profile link such as https://t.me/username');
-      }
-    }
-
-    if (!phone && !email && !telegram) {
-      throw new BadRequestException('Add a phone number, Telegram link, or email so buyers can reach you');
-    }
-
-    return {
-      ...(phone ? { phone } : {}),
-      ...(email ? { email } : {}),
-      ...(telegram ? { telegram } : {}),
-    };
-  }
-
   private async notifyIndexNow(slug: string) {
     const key = process.env.INDEXNOW_KEY?.trim();
     if (!key) return;
@@ -835,7 +854,7 @@ export class ListingsService {
       if (!response.ok && response.status !== 202) {
         this.logger.warn(`IndexNow rejected ${url} with status ${response.status}.`);
       }
-    } catch (error) {
+    } catch {
       this.logger.warn(`IndexNow notification failed for ${url}.`);
     }
   }
@@ -859,8 +878,84 @@ export class ListingsService {
   }
 
   private assertManagedImages(images?: string[]) {
+    if (!images || images.length === 0) {
+      throw new BadRequestException('Add at least one listing image');
+    }
     if (images?.some((url) => !this.s3Service.getObjectKey(url))) {
       throw new BadRequestException('Listing images must be uploaded through Remnant.');
+    }
+  }
+
+  private assertPrice(intent: IntentionTag, price?: string) {
+    if (intent !== 'SELL') return;
+    if (!price) throw new BadRequestException('A selling price is required');
+    const amount = new Prisma.Decimal(price);
+    if (amount.lte(0) || amount.gt('999999999.99')) {
+      throw new BadRequestException('Price must be greater than zero and no more than 999,999,999.99');
+    }
+  }
+
+  private assertStatusTransition(current: ListingStatus, next?: 'ACTIVE' | 'PAUSED' | 'COMPLETED') {
+    if (!next || next === current) return;
+    const allowed: Partial<Record<ListingStatus, ListingStatus[]>> = {
+      ACTIVE: ['PAUSED', 'COMPLETED'],
+      PAUSED: ['ACTIVE', 'COMPLETED'],
+      COMPLETED: [],
+      EXPIRED: ['ACTIVE'],
+      FLAGGED: [],
+      DELETED: [],
+    };
+    if (!(allowed[current] ?? []).includes(next)) {
+      throw new ConflictException(`Listing cannot move from ${current} to ${next}`);
+    }
+  }
+
+  private listingExpiryDate() {
+    const configuredDays = Number(process.env.LISTING_EXPIRY_DAYS ?? 90);
+    const days = Number.isFinite(configuredDays) ? Math.min(Math.max(configuredDays, 7), 365) : 90;
+    return new Date(Date.now() + days * 24 * 60 * 60 * 1000);
+  }
+
+  private async findIdempotentListing(userId: string, clientRequestId: string) {
+    return this.prisma.listing.findUnique({
+      where: { userId_clientRequestId: { userId, clientRequestId } },
+      include: { user: { select: { id: true, name: true, avatarUrl: true, trustTier: true } } },
+    });
+  }
+
+  private async attachUploads(
+    transaction: Prisma.TransactionClient,
+    ownerId: string,
+    uploadIds: string[],
+    images: string[],
+    listingId: string,
+  ) {
+    const uniqueIds = [...new Set(uploadIds)];
+    const uniqueImageKeys = [...new Set(images.map((image) => this.s3Service.getObjectKey(image)))];
+    if (
+      uniqueIds.length !== uploadIds.length ||
+      uniqueImageKeys.some((key) => !key) ||
+      uniqueImageKeys.length !== images.length ||
+      uniqueIds.length !== uniqueImageKeys.length
+    ) {
+      throw new BadRequestException('Each listing image must reference one unique upload');
+    }
+
+    const uploads = await transaction.upload.findMany({
+      where: { id: { in: uniqueIds }, ownerId, status: 'PENDING', listingId: null },
+      select: { id: true, s3Key: true },
+    });
+    const expectedKeys = new Set(uniqueImageKeys as string[]);
+    if (uploads.length !== uniqueIds.length || uploads.some((upload) => !expectedKeys.has(upload.s3Key))) {
+      throw new ForbiddenException('An upload is unavailable or does not belong to this publisher');
+    }
+
+    const attached = await transaction.upload.updateMany({
+      where: { id: { in: uniqueIds }, ownerId, status: 'PENDING', listingId: null },
+      data: { status: 'ATTACHED', listingId, attachedAt: new Date() },
+    });
+    if (attached.count !== uniqueIds.length) {
+      throw new ConflictException('One or more uploads were already attached; refresh and try again');
     }
   }
 
@@ -940,7 +1035,9 @@ export class ListingsService {
         title: true,
         slug: true,
         status: true,
+        version: true,
         images: true,
+        userId: true,
         isGuestListing: true,
         guestContact: true,
       },
@@ -952,13 +1049,20 @@ export class ListingsService {
       && typeof (guestContact as Record<string, unknown>).manageTokenHash === 'string'
         ? (guestContact as Record<string, string>).manageTokenHash
         : undefined;
-    if (!listing || !listing.isGuestListing || !guestManageTokenHash) {
+    if (!listing || !listing.isGuestListing) {
       throw new NotFoundException('Guest listing not found');
     }
-    if (!token || !/^[a-f0-9]{64}$/i.test(token)) {
-      throw new ForbiddenException('A valid guest listing management key is required');
+
+    try {
+      const guest = this.guestAccessService.verifyIdentityToken(token);
+      if (guest.userId === listing.userId) return listing;
+    } catch {
+      // Legacy per-listing management keys remain valid during migration.
     }
 
+    if (!guestManageTokenHash || !token || !/^[a-f0-9]{64}$/i.test(token)) {
+      throw new ForbiddenException('A valid guest listing management key is required');
+    }
     const provided = Buffer.from(this.hashGuestManagementToken(token), 'hex');
     const stored = Buffer.from(guestManageTokenHash, 'hex');
     if (provided.length !== stored.length || !timingSafeEqual(provided, stored)) {
@@ -1024,11 +1128,11 @@ export class ListingsService {
     return error instanceof Error ? error.message : 'Unknown error';
   }
 
-  private async markListingImagesAttached(images: string[], listingId: string) {
+  private async finalizeImageTags(images: string[], listingId: string) {
     try {
       await this.s3Service.markFilesAttached(images);
     } catch (error) {
-      this.logger.warn(`Listing ${listingId} was saved but its image lifecycle tags could not be finalized: ${this.errorMessage(error)}`);
+      this.logger.warn(`Listing ${listingId} is safely attached in the upload registry, but its optional S3 tag update will need reconciliation: ${this.errorMessage(error)}`);
     }
   }
 

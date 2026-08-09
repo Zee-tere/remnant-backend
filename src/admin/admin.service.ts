@@ -3,32 +3,28 @@ import {
   ListingStatus,
   Prisma,
   ReportStatus,
-  TransactionStatus,
+  SupportRequestStatus,
   UserRole,
 } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
-import { TransactionsService } from '../transactions/transactions.service';
-import { AdminReportAction, AdminReportActionDto, AdminUpdateUserDto } from './admin.dto';
+import { AdminReportAction, AdminReportActionDto, AdminUpdateUserDto, ResolveSupportRequestDto } from './admin.dto';
 
 @Injectable()
 export class AdminService {
   constructor(
     private prisma: PrismaService,
-    private transactionsService: TransactionsService,
     private notificationsService: NotificationsService,
   ) {}
 
   async getDashboard() {
-    const [totalUsers, activeListings, flaggedListings, openReports, bannedUsers, openTransactions, openDisputes] =
+    const [totalUsers, activeListings, flaggedListings, openReports, bannedUsers] =
       await Promise.all([
         this.prisma.user.count(),
         this.prisma.listing.count({ where: { status: 'ACTIVE' } }),
         this.prisma.listing.count({ where: { status: 'FLAGGED' } }),
         this.prisma.report.count({ where: { status: 'OPEN' } }),
         this.prisma.user.count({ where: { bannedAt: { not: null } } }),
-        this.prisma.transaction.count({ where: { status: { in: ['INITIATED', 'FUNDED', 'SHIPPED'] } } }),
-        this.prisma.transaction.count({ where: { status: 'DISPUTED' } }),
       ]);
 
     return {
@@ -37,9 +33,33 @@ export class AdminService {
       flaggedListings,
       openReports,
       bannedUsers,
-      openTransactions,
-      openDisputes,
     };
+  }
+
+  async getSupportRequests(page = 1, limit = 20, status?: string) {
+    const parsedStatus = status && Object.values(SupportRequestStatus).includes(status as SupportRequestStatus)
+      ? status as SupportRequestStatus
+      : undefined;
+    const where = parsedStatus ? { status: parsedStatus } : {};
+    const [requests, total] = await Promise.all([
+      this.prisma.supportRequest.findMany({
+        where,
+        skip: (page - 1) * limit,
+        take: limit,
+        orderBy: { createdAt: 'desc' },
+      }),
+      this.prisma.supportRequest.count({ where }),
+    ]);
+    return { requests, total, page, limit };
+  }
+
+  async updateSupportRequest(id: string, dto: ResolveSupportRequestDto) {
+    const request = await this.prisma.supportRequest.findUnique({ where: { id } });
+    if (!request) throw new NotFoundException('Support request not found');
+    return this.prisma.supportRequest.update({
+      where: { id },
+      data: { status: dto.status, resolution: dto.resolution },
+    });
   }
 
   async getUsers(page = 1, limit = 20, search?: string) {
@@ -179,44 +199,6 @@ export class AdminService {
     return { message: 'Listing removed from the public marketplace' };
   }
 
-  async getAllTransactions(page = 1, limit = 20) {
-    const skip = (page - 1) * limit;
-    const [transactions, total] = await Promise.all([
-      this.prisma.transaction.findMany({
-        skip,
-        take: limit,
-        orderBy: { createdAt: 'desc' },
-        include: {
-          buyer: { select: { id: true, name: true } },
-          seller: { select: { id: true, name: true } },
-          listing: { select: { id: true, title: true } },
-        },
-      }),
-      this.prisma.transaction.count(),
-    ]);
-    return { transactions, total, page, limit, totalPages: Math.ceil(total / limit) };
-  }
-
-  async overrideTransactionStatus(id: string, status: TransactionStatus) {
-    const allowedStatuses: TransactionStatus[] = [
-      'INITIATED',
-      'FUNDED',
-      'SHIPPED',
-      'RECEIVED',
-      'COMPLETE',
-      'DISPUTED',
-      'REFUNDED',
-    ];
-    if (!allowedStatuses.includes(status)) {
-      throw new BadRequestException(`Invalid transaction status: ${status}`);
-    }
-    return this.prisma.transaction.update({ where: { id }, data: { status } });
-  }
-
-  async refundTransaction(id: string, adminUserId: string) {
-    return this.transactionsService.refundTransaction(id, adminUserId);
-  }
-
   async getReports(page = 1, limit = 20, status?: string) {
     const skip = (page - 1) * limit;
     const reportStatus = this.parseReportStatus(status);
@@ -234,11 +216,25 @@ export class AdminService {
 
     const listingIds = reports.filter((report) => report.targetType === 'LISTING').map((report) => report.targetId);
     const userIds = reports.filter((report) => report.targetType === 'USER').map((report) => report.targetId);
-    const [listings, users] = await Promise.all([
+    const conversationIds = reports.filter((report) => report.targetType === 'CONVERSATION').map((report) => report.targetId);
+    const messageIds = reports.filter((report) => report.targetType === 'MESSAGE').map((report) => report.targetId);
+    const [listings, users, conversations, messages] = await Promise.all([
       listingIds.length
         ? this.prisma.listing.findMany({
             where: { id: { in: listingIds } },
             select: { id: true, title: true, slug: true, status: true, userId: true },
+          })
+        : [],
+      conversationIds.length
+        ? this.prisma.conversation.findMany({
+            where: { id: { in: conversationIds } },
+            select: { id: true, listing: { select: { title: true, slug: true } }, buyerId: true, sellerId: true },
+          })
+        : [],
+      messageIds.length
+        ? this.prisma.message.findMany({
+            where: { id: { in: messageIds } },
+            select: { id: true, content: true, senderId: true, conversationId: true, createdAt: true },
           })
         : [],
       userIds.length
@@ -251,6 +247,12 @@ export class AdminService {
     const targets = new Map<string, unknown>([
       ...listings.map((listing) => [`LISTING:${listing.id}`, listing] as const),
       ...users.map((user) => [`USER:${user.id}`, user] as const),
+      ...conversations.map((conversation) => [`CONVERSATION:${conversation.id}`, {
+        ...conversation,
+        title: `Conversation about ${conversation.listing.title}`,
+        slug: conversation.listing.slug,
+      }] as const),
+      ...messages.map((message) => [`MESSAGE:${message.id}`, { ...message, title: 'Reported message' }] as const),
     ]);
 
     return {
@@ -282,10 +284,25 @@ export class AdminService {
       }
 
       if (dto.action === AdminReportAction.BAN_USER) {
-        if (report.targetType !== 'USER') {
-          throw new BadRequestException('This action requires a user report');
+        let reportedUserId: string | null = report.targetType === 'USER' ? report.targetId : null;
+        if (report.targetType === 'CONVERSATION') {
+          const conversation = await transaction.conversation.findUnique({
+            where: { id: report.targetId },
+            select: { buyerId: true, sellerId: true },
+          });
+          reportedUserId = conversation
+            ? [conversation.buyerId, conversation.sellerId].find((id) => id !== report.reporterId) ?? null
+            : null;
         }
-        await transaction.user.update({ where: { id: report.targetId }, data: { bannedAt: new Date() } });
+        if (report.targetType === 'MESSAGE') {
+          const message = await transaction.message.findUnique({
+            where: { id: report.targetId },
+            select: { senderId: true },
+          });
+          reportedUserId = message?.senderId !== report.reporterId ? message?.senderId ?? null : null;
+        }
+        if (!reportedUserId) throw new BadRequestException('No reported user could be identified');
+        await transaction.user.update({ where: { id: reportedUserId }, data: { bannedAt: new Date() } });
       }
 
       await transaction.report.update({

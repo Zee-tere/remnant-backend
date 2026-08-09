@@ -75,28 +75,12 @@ export function validateEnvironment(config: Environment) {
       'ALLOWED_ORIGINS',
       'AWS_REGION',
       'AWS_S3_BUCKET',
-      'ESCROW_ENABLED',
     ].forEach((key) => assertPresent(config, key, errors));
 
     assertSupabaseDatabase(config, errors);
     assertProductionUrl(config, 'FRONTEND_URL', errors);
-    if (read(config, 'ESCROW_ENABLED') === 'true') {
-      ['ESCROW_API_EMAIL', 'ESCROW_API_KEY', 'ESCROW_WEBHOOK_SECRET'].forEach(
-        (key) => assertPresent(config, key, errors),
-      );
-    }
-
-    if (read(config, 'ESCROW_ALLOW_STUB') === 'true') {
-      errors.push('ESCROW_ALLOW_STUB must be false in production');
-    }
-
-    if (read(config, 'PAYSTACK_ENABLED') === 'true') {
-      ['PAYSTACK_SECRET_KEY'].forEach((key) =>
-        assertPresent(config, key, errors),
-      );
-      const callbackUrl = read(config, 'PAYSTACK_CALLBACK_URL');
-      if (callbackUrl)
-        assertProductionUrl(config, 'PAYSTACK_CALLBACK_URL', errors);
+    if (read(config, 'ESCROW_ENABLED') === 'true' || read(config, 'PAYSTACK_ENABLED') === 'true') {
+      errors.push('Payments and escrow must remain disabled for this marketplace release');
     }
   }
 

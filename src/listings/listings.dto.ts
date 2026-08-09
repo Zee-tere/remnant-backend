@@ -3,30 +3,39 @@ import {
   IsNotEmpty,
   IsOptional,
   IsEnum,
-  IsDecimal,
   IsArray,
   IsObject,
   IsIn,
   MaxLength,
   ArrayMaxSize,
+  ArrayMinSize,
   IsUrl,
-  IsEmail,
   Matches,
-  ValidateNested,
+  IsUUID,
+  IsInt,
+  Min,
+  MinLength,
 } from 'class-validator';
-import { Type } from 'class-transformer';
-import { IntentionTag, Condition } from '@prisma/client';
+import { Transform, Type } from 'class-transformer';
+import { IntentionTag, Condition, ListingStatus } from '@prisma/client';
 import { NIGERIAN_STATES } from '../config/nigeria-locations';
 import { LISTING_CATEGORIES } from '../config/listing-taxonomy';
 
 export class CreateListingDto {
+  @IsUUID()
+  clientRequestId: string;
+
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
   @IsString()
   @IsNotEmpty()
+  @MinLength(2)
   @MaxLength(120)
   title: string;
 
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
   @IsString()
   @IsNotEmpty()
+  @MinLength(10)
   @MaxLength(2000)
   description: string;
 
@@ -42,6 +51,7 @@ export class CreateListingDto {
   intentionTag: IntentionTag;
 
   @IsOptional()
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
   @IsString()
   @MaxLength(160)
   pairingKeyword?: string;
@@ -52,61 +62,59 @@ export class CreateListingDto {
 
   @IsOptional()
   @IsString()
-  @Matches(/^\d+(?:\.\d{1,2})?$/, { message: 'Price must be a valid amount' })
+  @Matches(/^(?!0+(?:\.0{1,2})?$)\d{1,9}(?:\.\d{1,2})?$/, {
+    message: 'Price must be greater than zero and no more than 999,999,999.99',
+  })
   price?: string;
 
   @IsString()
   @IsIn(NIGERIAN_STATES)
   city: string;
 
-  @IsOptional()
   @IsArray()
+  @ArrayMinSize(1)
   @ArrayMaxSize(8)
   @IsUrl({ require_protocol: true }, { each: true })
   @IsString({ each: true })
-  images?: string[];
+  images: string[];
+
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayMaxSize(8)
+  @IsUUID(undefined, { each: true })
+  uploadIds: string[];
 }
 
-export class GuestContactDto {
-  @IsOptional()
-  @IsString()
-  @Matches(/^\+?[0-9 ()-]{7,24}$/, {
-    message: 'Phone number may only contain digits, spaces, brackets, hyphens, and an optional leading +',
-  })
-  phone?: string;
-
-  @IsOptional()
-  @IsEmail()
-  @MaxLength(254)
-  email?: string;
-
-  @IsOptional()
-  @IsUrl({ protocols: ['https'], require_protocol: true })
-  @MaxLength(120)
-  telegram?: string;
-}
-
-export class CreateGuestListingDto extends CreateListingDto {
-  @IsObject()
-  @ValidateNested()
-  @Type(() => GuestContactDto)
-  guestContact: GuestContactDto;
-}
+export class CreateGuestListingDto extends CreateListingDto {}
 
 export class UpdateGuestListingStatusDto {
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  version: number;
+
   @IsString()
-  @IsIn(['PAUSED', 'COMPLETED'])
-  status: 'PAUSED' | 'COMPLETED';
+  @IsIn(['ACTIVE', 'PAUSED', 'COMPLETED'])
+  status: 'ACTIVE' | 'PAUSED' | 'COMPLETED';
 }
 
 export class UpdateListingDto {
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  version: number;
+
   @IsOptional()
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
   @IsString()
+  @MinLength(2)
   @MaxLength(120)
   title?: string;
 
   @IsOptional()
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
   @IsString()
+  @MinLength(10)
   @MaxLength(2000)
   description?: string;
 
@@ -134,7 +142,9 @@ export class UpdateListingDto {
 
   @IsOptional()
   @IsString()
-  @Matches(/^\d+(?:\.\d{1,2})?$/, { message: 'Price must be a valid amount' })
+  @Matches(/^(?!0+(?:\.0{1,2})?$)\d{1,9}(?:\.\d{1,2})?$/, {
+    message: 'Price must be greater than zero and no more than 999,999,999.99',
+  })
   price?: string;
 
   @IsOptional()
@@ -144,8 +154,21 @@ export class UpdateListingDto {
 
   @IsOptional()
   @IsArray()
+  @ArrayMinSize(1)
   @ArrayMaxSize(8)
   @IsUrl({ require_protocol: true }, { each: true })
   @IsString({ each: true })
   images?: string[];
+
+  @IsOptional()
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayMaxSize(8)
+  @IsUUID(undefined, { each: true })
+  uploadIds?: string[];
+
+  @IsOptional()
+  @IsEnum(ListingStatus)
+  @IsIn(['ACTIVE', 'PAUSED', 'COMPLETED'])
+  status?: 'ACTIVE' | 'PAUSED' | 'COMPLETED';
 }

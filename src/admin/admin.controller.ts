@@ -6,9 +6,9 @@ import {
   AdminListingStatusDto,
   AdminMessageUserDto,
   AdminReportActionDto,
-  AdminTransactionStatusDto,
   AdminUpdateUserDto,
   ResolveReportDto,
+  ResolveSupportRequestDto,
 } from './admin.dto';
 
 @Controller('admin')
@@ -70,24 +70,6 @@ export class AdminController {
     return this.adminService.removeListing(id);
   }
 
-  @Get('transactions')
-  getTransactions(@Query('page') page?: string, @Query('limit') limit?: string) {
-    return this.adminService.getAllTransactions(
-      Math.max(Number(page) || 1, 1),
-      Math.min(Math.max(Number(limit) || 20, 1), 100),
-    );
-  }
-
-  @Post('transactions/:id/refund')
-  refundTransaction(@Param('id', ParseUUIDPipe) id: string, @Req() req: Request) {
-    return this.adminService.refundTransaction(id, req.user!.userId);
-  }
-
-  @Patch('transactions/:id')
-  overrideTransactionStatus(@Param('id', ParseUUIDPipe) id: string, @Body() dto: AdminTransactionStatusDto) {
-    return this.adminService.overrideTransactionStatus(id, dto.status);
-  }
-
   @Get('reports')
   getReports(@Query('page') page?: string, @Query('limit') limit?: string, @Query('status') status?: string) {
     return this.adminService.getReports(
@@ -105,5 +87,19 @@ export class AdminController {
   @Patch('reports/:id')
   resolveReport(@Param('id', ParseUUIDPipe) id: string, @Body() dto: ResolveReportDto) {
     return this.adminService.resolveReport(id, dto.resolution);
+  }
+
+  @Get('support')
+  getSupportRequests(@Query('page') page?: string, @Query('limit') limit?: string, @Query('status') status?: string) {
+    return this.adminService.getSupportRequests(
+      Math.max(Number(page) || 1, 1),
+      Math.min(Math.max(Number(limit) || 20, 1), 100),
+      status,
+    );
+  }
+
+  @Patch('support/:id')
+  updateSupportRequest(@Param('id', ParseUUIDPipe) id: string, @Body() dto: ResolveSupportRequestDto) {
+    return this.adminService.updateSupportRequest(id, dto);
   }
 }

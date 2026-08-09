@@ -118,7 +118,7 @@ export class PairAlertsService {
     }
 
     data.version = { increment: 1 };
-    const alert = await this.prisma.$transaction(async (transaction) => {
+    await this.prisma.$transaction(async (transaction) => {
       const updated = await transaction.pairAlert.update({ where: { id }, data });
       if (updated.status === 'ACTIVE') {
         await transaction.matchingJob.upsert({
@@ -435,7 +435,7 @@ export class PairAlertsService {
         WHERE id = ${alert.id}
       `;
       return { ...alert, embeddingVector: vector, embeddingHash: hash };
-    } catch (error) {
+    } catch {
       this.logger.warn(`Could not embed pair alert ${alert.id}; using local text matching.`);
       return alert;
     }
@@ -515,7 +515,7 @@ export class PairAlertsService {
             "embeddedAt" = CURRENT_TIMESTAMP
         WHERE id = ${listing.id} AND version = ${listing.version}
       `;
-    } catch (error) {
+    } catch {
       this.logger.warn(`Could not embed listing ${listing.id} for alert retrieval; keeping surface matches.`);
     }
   }

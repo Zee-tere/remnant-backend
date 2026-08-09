@@ -33,7 +33,6 @@ if ($currentSecret.Length -lt 32) {
   $generated = $true
 }
 
-$variables["PLATFORM_PAYMENTS_ENABLED"] = "false"
 $payload = @{ Variables = $variables } | ConvertTo-Json -Depth 4 -Compress
 $tempFile = Join-Path $env:TEMP "remnant-guest-messaging-$([guid]::NewGuid()).json"
 

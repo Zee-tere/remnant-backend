@@ -5,12 +5,12 @@ This backend is now aligned with the zero-cost launch architecture from the rewr
 - NestJS REST API packaged for AWS Lambda.
 - API Gateway HTTP API in front of `dist/lambda.handler`.
 - Supabase PostgreSQL as the database runtime.
-- Supabase Realtime for notifications, matches, transactions, and messages.
+- Supabase Realtime for notifications, matches, and messages.
 - Cognito Hosted UI for email/password and Google auth.
 - Cognito access-token verification in NestJS via `aws-jwt-verify`.
 - Indexed PostgreSQL retrieval first, with opt-in OpenAI embeddings stored in Supabase `pgvector`.
 - Durable, versioned matching jobs processed by EventBridge-triggered workers.
-- Escrow.com code retained but disabled at launch with `ESCROW_ENABLED=false`.
+- Connection-only marketplace routes; payments, orders, refunds, and escrow are not registered.
 
 Docker, EC2, ALB, ECS/Fargate, Aurora/RDS, and API Gateway WebSocket artifacts are intentionally removed from this launch path to avoid baseline monthly cost.
 
@@ -77,7 +77,6 @@ Socket.IO is removed. Realtime delivery is database-driven:
 
 - `Notification` inserts
 - `Match` inserts/updates
-- `Transaction` updates
 - `Message` inserts/updates
 
 Enable Supabase Realtime and RLS policies for the relevant tables before launch. Client-side filters are convenience only; RLS is the security boundary.
@@ -126,21 +125,13 @@ Marketplace feeds use deterministic `(createdAt, id)` cursors. UUID ordering is
 used only as a stable tie-breaker when timestamps are equal; it does not need to
 be sequential.
 
-## Escrow
+## Payments
 
-Set launch default:
-
-```env
-ESCROW_ENABLED=false
-```
-
-When disabled, transactions are local-only and no Escrow.com API calls are made. The webhook endpoint returns immediately with:
-
-```json
-{ "received": true, "note": "escrow disabled" }
-```
-
-To re-enable escrow later, set `ESCROW_ENABLED=true`, configure Escrow.com credentials, and redeploy.
+This release is a connection marketplace only. The application does not register
+transaction, order, payment callback, refund, or escrow controllers. Buyers and
+sellers arrange any payment and handoff directly. Environment validation rejects
+`ESCROW_ENABLED=true` or `PAYSTACK_ENABLED=true` so dormant historical code cannot
+be enabled by configuration alone.
 
 ## Required Production Parameters
 
@@ -174,15 +165,12 @@ OPENAI_API_KEY
 GUEST_ACCESS_SECRET
 SUPABASE_JWT_SECRET
 SUPABASE_URL
-ESCROW_ENABLED
 MATCH_SCORE_THRESHOLD
 MATCH_ATTRIBUTE_WEIGHT
 MATCH_SEMANTIC_WEIGHT
 MATCH_MAX_CANDIDATES
 MATCH_PRICE_TOLERANCE_PERCENT
 MATCH_REQUIRE_CITY
-PLATFORM_FEE_PERCENTAGE
-PLATFORM_PAYMENTS_ENABLED
 INDEXNOW_KEY
 ```
 
@@ -249,8 +237,16 @@ prefix:
 }
 ```
 
-Uploads start with `remnant-status=temporary`, become `attached` after the
-listing transaction commits, and become `orphaned` when replaced. Apply
-`s3-listings-lifecycle.example.json` to expire unclaimed uploads after one day
-and replaced images after seven days. The URL-to-key validation supports both
+Every upload is registered in the database before it is returned to the client.
+Listing creation attaches only uploads owned by the authenticated user or the
+presented guest capability, inside the same database transaction as the listing.
+The database registry is authoritative: scheduled cleanup removes uploads that
+remain unattached for 24 hours and replaced/deleted images after their grace
+period. Do not configure an S3 lifecycle rule that independently expires
+`temporary` objects, because a failed best-effort tag update must never delete an
+image referenced by an active listing. The URL-to-key validation supports both
 the bucket hostname and the configured CloudFront public base URL.
+
+Before launch and for every production release, complete `PRODUCTION_RUNBOOK.md`.
+Its backup/restore and Cognito checks require actual cloud evidence and cannot be
+satisfied by a local build.

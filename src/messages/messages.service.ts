@@ -26,37 +26,45 @@ export class MessagesService {
     private guestAccessService: GuestAccessService,
   ) {}
 
-  async startGuestConversation(dto: StartGuestConversationDto) {
-    const guest = await this.guestAccessService.getOrCreateGuestContactUser(
-      dto.name,
-      dto.contact,
-    );
+  async startGuestConversation(dto: StartGuestConversationDto, token?: string) {
+    const guest = token
+      ? await this.prisma.user.findUnique({
+          where: { id: this.guestAccessService.verifyIdentityToken(token).userId },
+        })
+      : await this.guestAccessService.getOrCreateGuestContactUser(dto.name, randomUUID());
+    if (!guest) throw new NotFoundException('Guest identity not found');
     const conversation = await this.startConversation(guest.id, dto.listingId);
     const message = await this.createMessage(
       conversation.id,
       guest.id,
-      `Guest offer\nContact: ${dto.contact}\n\n${dto.offer}`,
+      dto.offer,
       'OFFER',
+      dto.clientRequestId,
     );
+    const accessToken = token ?? this.guestAccessService.issueToken('conversation', conversation.id, guest);
     return {
       delivered: true,
       conversationId: conversation.id,
       messageId: message.id,
+      accessToken,
+      expiresInDays: 30,
+      deepLink: `/guest/messages/${conversation.id}`,
     };
   }
 
   async getGuestConversation(conversationId: string, token?: string) {
-    const guest = this.guestAccessService.verifyToken(
-      token,
-      'conversation',
-      conversationId,
-    );
+    const guest = this.resolveGuestActor(token, conversationId);
     const conversation = await this.getConversation(
       conversationId,
       guest.userId,
     );
     const messages = await this.getMessages(conversationId, guest.userId);
     return { conversation, messages };
+  }
+
+  async getGuestConversations(token?: string) {
+    const guest = this.guestAccessService.verifyIdentityToken(token);
+    return this.getConversations(guest.userId, { limit: 50 });
   }
 
   async createGuestMessage(
@@ -66,11 +74,7 @@ export class MessagesService {
     type: MessageType = 'TEXT',
     clientMessageId?: string,
   ) {
-    const guest = this.guestAccessService.verifyToken(
-      token,
-      'conversation',
-      conversationId,
-    );
+    const guest = this.resolveGuestActor(token, conversationId);
     return this.createMessage(
       conversationId,
       guest.userId,
@@ -85,11 +89,7 @@ export class MessagesService {
     token?: string,
     dto: MarkConversationReadDto = {},
   ) {
-    const guest = this.guestAccessService.verifyToken(
-      token,
-      'conversation',
-      conversationId,
-    );
+    const guest = this.resolveGuestActor(token, conversationId);
     return this.markAsRead(conversationId, guest.userId, dto);
   }
 
@@ -181,11 +181,6 @@ export class MessagesService {
     });
     if (!listing || listing.status !== 'ACTIVE') {
       throw new NotFoundException('Active listing not found');
-    }
-    if (listing.user.email.endsWith('@guest.remnant.local')) {
-      throw new ForbiddenException(
-        'This guest seller has not joined Remnant yet, so messaging is not available.',
-      );
     }
     if (listing.userId === buyerId) {
       throw new ForbiddenException('Cannot message yourself');
@@ -522,6 +517,14 @@ export class MessagesService {
   ) {
     if (conversation.buyerId !== userId && conversation.sellerId !== userId) {
       throw new ForbiddenException('Not a member of this conversation');
+    }
+  }
+
+  private resolveGuestActor(token: string | undefined, conversationId: string) {
+    try {
+      return this.guestAccessService.verifyToken(token, 'conversation', conversationId);
+    } catch {
+      return this.guestAccessService.verifyIdentityToken(token);
     }
   }
 

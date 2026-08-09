@@ -33,14 +33,21 @@ async function main() {
   await client.query('SELECT pg_advisory_lock($1)', [72707369]);
 
   const result = await client.query(
-    'SELECT migration_name FROM "_prisma_migrations" WHERE finished_at IS NOT NULL AND rolled_back_at IS NULL',
+    'SELECT migration_name, checksum FROM "_prisma_migrations" WHERE finished_at IS NOT NULL AND rolled_back_at IS NULL',
   );
-  const applied = new Set(result.rows.map((row) => row.migration_name));
+  const applied = new Map(result.rows.map((row) => [row.migration_name, row.checksum]));
 
   for (const migrationName of migrationNames) {
-    if (applied.has(migrationName)) continue;
     const sql = readFileSync(join(migrationsDirectory, migrationName, 'migration.sql'), 'utf8');
     const checksum = createHash('sha256').update(sql).digest('hex');
+    if (applied.has(migrationName)) {
+      if (applied.get(migrationName) !== checksum) {
+        throw new Error(
+          `Migration ${migrationName} was changed after it was applied. Restore the committed SQL; create a new forward migration instead.`,
+        );
+      }
+      continue;
+    }
 
     await client.query('BEGIN');
     try {

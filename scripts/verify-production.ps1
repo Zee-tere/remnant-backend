@@ -1,0 +1,103 @@
+param(
+  [Parameter(Mandatory = $true)]
+  [ValidatePattern('^https://')]
+  [string]$ApiUrl,
+
+  [Parameter(Mandatory = $true)]
+  [ValidatePattern('^https://')]
+  [string]$FrontendUrl,
+
+  [string]$Region = 'us-east-1',
+  [string]$FunctionName = 'remnant-api',
+  [string]$UploadBucket = 'remnant-uploads-prod',
+  [string]$UserPoolId,
+  [string]$UserPoolClientId
+)
+
+$ErrorActionPreference = 'Stop'
+$failures = [System.Collections.Generic.List[string]]::new()
+
+function Assert-Command([string]$Name) {
+  if (-not (Get-Command $Name -ErrorAction SilentlyContinue)) {
+    throw "Required command '$Name' is not installed or not on PATH."
+  }
+}
+
+function Invoke-Check([string]$Name, [scriptblock]$Check) {
+  try {
+    & $Check
+    Write-Host "PASS $Name" -ForegroundColor Green
+  } catch {
+    $failures.Add("$Name`: $($_.Exception.Message)")
+    Write-Host "FAIL $Name" -ForegroundColor Red
+  }
+}
+
+Assert-Command 'curl.exe'
+Assert-Command 'aws'
+
+$api = $ApiUrl.TrimEnd('/')
+$web = $FrontendUrl.TrimEnd('/')
+
+Invoke-Check 'API health' {
+  curl.exe --fail --silent --show-error --max-time 20 "$api/health" | Out-Null
+}
+
+Invoke-Check 'Public listing feed' {
+  curl.exe --fail --silent --show-error --max-time 20 "$api/listings?limit=1" | Out-Null
+}
+
+Invoke-Check 'Frontend marketplace' {
+  curl.exe --fail --silent --show-error --max-time 20 "$web/marketplace" | Out-Null
+}
+
+Invoke-Check 'Controlled disallowed-origin response' {
+  $status = curl.exe --silent --output NUL --write-out '%{http_code}' --request OPTIONS "$api/listings" --header 'Origin: https://not-remnant.invalid' --header 'Access-Control-Request-Method: GET'
+  if ($status -ne '403') { throw "expected 403, received $status" }
+}
+
+Invoke-Check 'Lambda configuration exists' {
+  aws lambda get-function-configuration --region $Region --function-name $FunctionName --query 'FunctionName' --output text | Out-Null
+}
+
+Invoke-Check 'At least one Lambda alarm exists' {
+  $count = aws cloudwatch describe-alarms --region $Region --query "length(MetricAlarms[?contains(Dimensions[].Value, '$FunctionName')])" --output text
+  if ([int]$count -lt 1) { throw 'no CloudWatch metric alarm targets the Lambda function' }
+}
+
+Invoke-Check 'Required schedules are enabled' {
+  foreach ($ruleName in @('remnant-matching-worker', 'remnant-outbox-relay', 'remnant-daily-maintenance')) {
+    $state = aws events describe-rule --region $Region --name $ruleName --query 'State' --output text
+    if ($state -ne 'ENABLED') { throw "$ruleName is not enabled" }
+    $targets = aws events list-targets-by-rule --region $Region --rule $ruleName --query "length(Targets[?contains(Arn, '$FunctionName')])" --output text
+    if ([int]$targets -lt 1) { throw "$ruleName does not target $FunctionName" }
+  }
+}
+
+Invoke-Check 'S3 public access is fully blocked' {
+  $values = aws s3api get-public-access-block --region $Region --bucket $UploadBucket --query 'PublicAccessBlockConfiguration.[BlockPublicAcls,IgnorePublicAcls,BlockPublicPolicy,RestrictPublicBuckets]' --output text
+  if (($values -split '\s+') -contains 'False') { throw 'one or more S3 public-access block settings are false' }
+}
+
+Invoke-Check 'S3 default encryption is configured' {
+  aws s3api get-bucket-encryption --region $Region --bucket $UploadBucket --query 'ServerSideEncryptionConfiguration.Rules[0].ApplyServerSideEncryptionByDefault.SSEAlgorithm' --output text | Out-Null
+}
+
+if ($UserPoolId -and $UserPoolClientId) {
+  Invoke-Check 'Cognito public client auth flow' {
+    $client = aws cognito-idp describe-user-pool-client --region $Region --user-pool-id $UserPoolId --client-id $UserPoolClientId --output json | ConvertFrom-Json
+    if ($client.UserPoolClient.ClientSecret) { throw 'browser app client has a client secret' }
+    if ($client.UserPoolClient.ExplicitAuthFlows -notcontains 'ALLOW_USER_PASSWORD_AUTH') { throw 'ALLOW_USER_PASSWORD_AUTH is missing' }
+    if (-not $client.UserPoolClient.EnableTokenRevocation) { throw 'token revocation is disabled' }
+  }
+} else {
+  Write-Host 'SKIP Cognito check (provide UserPoolId and UserPoolClientId)' -ForegroundColor Yellow
+}
+
+if ($failures.Count -gt 0) {
+  Write-Host "`nProduction verification failed:" -ForegroundColor Red
+  $failures | ForEach-Object { Write-Host "- $_" }
+  exit 1
+}
+
+Write-Host "`nAutomated production checks passed. Complete the manual backup/restore and user-flow gates in PRODUCTION_RUNBOOK.md." -ForegroundColor Green

@@ -143,6 +143,96 @@ describe('MatchingService', () => {
     expect((service as any).hasStructuredComplementarity(left, right)).toBe(true);
   });
 
+  it('hard-rejects same-side and materially incompatible sizes', () => {
+    const service = createService();
+    const source = {
+      ...baseListing,
+      intentionTag: 'TRADE',
+      category: 'Shoes & Footwear',
+      compatibilityAttributes: {
+        neededPiece: 'right Remnant One shoe size 10',
+        side: 'left',
+        brand: 'Remnant',
+        model: 'One',
+        size: '10',
+        sizeSystem: 'UK',
+      },
+    };
+    const sameSide = {
+      ...candidate,
+      intentionTag: 'TRADE',
+      category: source.category,
+      compatibilityAttributes: { side: 'left', brand: 'Remnant', model: 'One', size: '10', sizeSystem: 'UK' },
+    };
+    const wrongSize = {
+      ...candidate,
+      intentionTag: 'TRADE',
+      category: source.category,
+      compatibilityAttributes: { side: 'right', brand: 'Remnant', model: 'One', size: '14', sizeSystem: 'UK' },
+    };
+
+    expect(service.passesHardCompatibility(source, sameSide)).toEqual({
+      compatible: false,
+      rejectReason: 'side_not_complementary',
+    });
+    expect(service.passesHardCompatibility(source, wrongSize)).toEqual({
+      compatible: false,
+      rejectReason: 'size_out_of_range',
+    });
+  });
+
+  it('does not let a maximum semantic score rescue a hard-invalid candidate', async () => {
+    const source = {
+      ...baseListing,
+      category: 'Shoes & Footwear',
+      compatibilityAttributes: {
+        neededPiece: 'right Remnant One shoe size 10',
+        side: 'left',
+        brand: 'Remnant',
+        model: 'One',
+        size: '10',
+        sizeSystem: 'UK',
+      },
+    };
+    const invalid = {
+      ...candidate,
+      id: 'same-side-perfect-semantic',
+      category: source.category,
+      title: 'Right Remnant One shoe size 10',
+      semanticScore: 1,
+      compatibilityAttributes: { side: 'left', brand: 'Remnant', model: 'One', size: '10', sizeSystem: 'UK' },
+    };
+    const valid = {
+      ...candidate,
+      id: 'valid-lower-semantic',
+      category: source.category,
+      title: 'Right Remnant One shoe size 10',
+      semanticScore: 0.1,
+      compatibilityAttributes: { side: 'right', brand: 'Remnant', model: 'One', size: '10', sizeSystem: 'UK' },
+    };
+    const prisma = {
+      listing: {
+        findUnique: jest.fn().mockResolvedValue(source),
+        findMany: jest.fn().mockResolvedValue([invalid, valid]),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+      $queryRaw: jest.fn().mockResolvedValue([{ embeddingVector: null }]),
+      match: {
+        upsert: jest.fn().mockResolvedValue({ id: 'match-1', notifiedAt: null }),
+        updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+      },
+      matchParticipantState: { createMany: jest.fn().mockResolvedValue({ count: 2 }) },
+    };
+    const service = createService(prisma);
+
+    await service.runMatchForListing(source.id, 'test');
+
+    expect(prisma.match.upsert).toHaveBeenCalledTimes(1);
+    expect(prisma.match.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { canonicalKey: 'pot-1:valid-lower-semantic' } }),
+    );
+  });
+
   it('gives same-state matches a decisive score advantage', () => {
     const service = createService();
     const nearby = { ...candidate, city: 'Lagos' };

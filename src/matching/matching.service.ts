@@ -23,6 +23,11 @@ interface ScoredCandidate {
   breakdown: Prisma.InputJsonObject;
 }
 
+export interface HardCompatibilityResult {
+  compatible: boolean;
+  rejectReason?: string;
+}
+
 const PROVIDER_INTENTS: IntentionTag[] = ['SELL', 'DONATE', 'FIX', 'RECYCLE'];
 const MATCHING_ALGORITHM_VERSION = 'listing-pair-v2';
 const COMPLEMENTARY_SIDES: Record<string, string> = {
@@ -101,6 +106,7 @@ export class MatchingService {
     let listingWithEmbedding: ListingForMatching = listing;
     let candidates = await this.getFallbackCandidates(listing);
     let scored = candidates
+      .filter((candidate) => this.passesHardCompatibility(listingWithEmbedding, candidate).compatible)
       .map((candidate) => this.scoreCandidate(listingWithEmbedding, candidate))
       .filter((candidate) => candidate.score >= this.threshold)
       .sort((a, b) => b.score - a.score)
@@ -115,6 +121,7 @@ export class MatchingService {
       listingWithEmbedding = await this.ensureEmbedding(listing);
       candidates = await this.getHardFilteredCandidates(listingWithEmbedding);
       scored = candidates
+        .filter((candidate) => this.passesHardCompatibility(listingWithEmbedding, candidate).compatible)
         .map((candidate) => this.scoreCandidate(listingWithEmbedding, candidate))
         .filter((candidate) => candidate.score >= this.threshold)
         .sort((a, b) => b.score - a.score)
@@ -167,7 +174,7 @@ export class MatchingService {
         data: { notifiedAt: new Date() },
       });
       if (claim.count === 1) {
-        await this.notifyMatchOwners(match.id, listingWithEmbedding, candidate.listing, candidate.score);
+        await this.notifyMatchOwners(match.id, listingWithEmbedding, candidate.listing);
       }
       created.push(match);
     }
@@ -393,10 +400,9 @@ export class MatchingService {
     );
     vectorCandidates.forEach((candidate) => candidatesById.set(candidate.id, candidate));
 
-    return [...candidatesById.values()].filter((candidate) => {
-      if (!this.areIntentsCompatible(listing, candidate)) return false;
-      return true;
-    });
+    return [...candidatesById.values()].filter(
+      (candidate) => this.passesHardCompatibility(listing, candidate).compatible,
+    );
   }
 
   private async getFallbackCandidates(listing: Listing) {
@@ -428,10 +434,71 @@ export class MatchingService {
       [...recentCandidates, ...indexedCandidates].map((candidate) => [candidate.id, candidate]),
     ).values()];
 
-    return candidates.filter((candidate) => {
-      if (!this.areIntentsCompatible(listing, candidate)) return false;
-      return true;
-    });
+    return candidates.filter(
+      (candidate) => this.passesHardCompatibility(listing, candidate).compatible,
+    );
+  }
+
+  passesHardCompatibility(a: Listing, b: Listing): HardCompatibilityResult {
+    if (a.id === b.id) return { compatible: false, rejectReason: 'same_listing' };
+    if (a.userId === b.userId) return { compatible: false, rejectReason: 'same_owner' };
+    if (a.status !== 'ACTIVE' || b.status !== 'ACTIVE') {
+      return { compatible: false, rejectReason: 'listing_unavailable' };
+    }
+    if (a.category !== b.category) {
+      return { compatible: false, rejectReason: 'category_mismatch' };
+    }
+    if (!this.areIntentsCompatible(a, b)) {
+      return { compatible: false, rejectReason: 'intent_not_complementary' };
+    }
+
+    const attrsA = this.getCompatibilityAttributes(a);
+    const attrsB = this.getCompatibilityAttributes(b);
+    const category = this.getCategoryKey(a.category);
+
+    if (attrsA.pairingtype && attrsB.pairingtype && attrsA.pairingtype !== attrsB.pairingtype) {
+      return { compatible: false, rejectReason: 'pairing_type_mismatch' };
+    }
+
+    if (attrsA.side && attrsB.side && COMPLEMENTARY_SIDES[attrsA.side] !== attrsB.side) {
+      return { compatible: false, rejectReason: 'side_not_complementary' };
+    }
+
+    const sizeSystemA = attrsA.sizesystem ?? attrsA.sizeunit;
+    const sizeSystemB = attrsB.sizesystem ?? attrsB.sizeunit;
+    if (attrsA.size && attrsB.size) {
+      if (sizeSystemA && sizeSystemB && sizeSystemA !== sizeSystemB) {
+        return { compatible: false, rejectReason: 'size_system_mismatch' };
+      }
+      const leftSize = Number(attrsA.size);
+      const rightSize = Number(attrsB.size);
+      if (Number.isFinite(leftSize) && Number.isFinite(rightSize)) {
+        const maxDelta = ['shoes', 'fashion', 'sports'].includes(category) ? 1 : 0.5;
+        if (Math.abs(leftSize - rightSize) > maxDelta) {
+          return { compatible: false, rejectReason: 'size_out_of_range' };
+        }
+      } else if (attrsA.size !== attrsB.size) {
+        return { compatible: false, rejectReason: 'size_mismatch' };
+      }
+    }
+
+    const exactKeysByCategory: Record<string, string[]> = {
+      electronics: ['brand', 'model', 'generation'],
+      shoes: ['brand', 'model'],
+      auto_parts: ['make', 'model'],
+      car_parts: ['make', 'model'],
+      books: ['isbn', 'edition'],
+      accessories: ['setname'],
+      collectibles: ['setname'],
+      toys: ['brand', 'setname', 'model'],
+    };
+    for (const key of exactKeysByCategory[category] ?? []) {
+      if (attrsA[key] && attrsB[key] && attrsA[key] !== attrsB[key]) {
+        return { compatible: false, rejectReason: `${key}_mismatch` };
+      }
+    }
+
+    return { compatible: true };
   }
 
   private async findIndexedSurfaceCandidateIds(listing: Listing) {
@@ -555,7 +622,7 @@ export class MatchingService {
       if (left === undefined || right === undefined) continue;
 
       available += 1;
-      const keyScore = this.scoreAttributeValue(normalizedKey, left, right, a.intentionTag, b.intentionTag);
+      const keyScore = this.scoreAttributeValue(normalizedKey, left, right);
       matched += keyScore;
       considered[normalizedKey] = { left, right, score: this.round(keyScore) };
     }
@@ -578,8 +645,6 @@ export class MatchingService {
     key: string,
     left: string,
     right: string,
-    leftIntent: IntentionTag,
-    rightIntent: IntentionTag,
   ) {
     if (key === 'side') {
       if (COMPLEMENTARY_SIDES[left] === right) return 1;
@@ -717,15 +782,14 @@ export class MatchingService {
     return [a, b].sort().join(':');
   }
 
-  private async notifyMatchOwners(matchId: string, listing: Listing, candidate: Listing, score: number) {
-    const percent = Math.round(score * 100);
+  private async notifyMatchOwners(matchId: string, listing: Listing, candidate: Listing) {
     const notifications: Promise<unknown>[] = [];
     if (!listing.isGuestListing) {
       notifications.push(this.notificationsService.createNotification(
         listing.userId,
         'PAIR_MATCH',
         'Pair match found',
-        `${candidate.title} looks like a ${percent}% match for ${listing.title}.`,
+        `${candidate.title} passed the compatibility rules for ${listing.title}. Review the details before arranging an exchange.`,
         `/marketplace/${candidate.id}`,
       ));
     }
@@ -734,7 +798,7 @@ export class MatchingService {
         candidate.userId,
         'PAIR_MATCH',
         'Pair match found',
-        `${listing.title} looks like a ${percent}% match for ${candidate.title}.`,
+        `${listing.title} passed the compatibility rules for ${candidate.title}. Review the details before arranging an exchange.`,
         `/marketplace/${listing.id}`,
       ));
     }

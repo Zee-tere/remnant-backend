@@ -12,8 +12,6 @@ import { UploadModule } from './upload/upload.module';
 import { MessagesModule } from './messages/messages.module';
 import { MatchingModule } from './matching/matching.module';
 import { NotificationsModule } from './notifications/notifications.module';
-import { TransactionsModule } from './transactions/transactions.module';
-import { ReviewsModule } from './reviews/reviews.module';
 import { AchievementsModule } from './achievements/achievements.module';
 import { AdminModule } from './admin/admin.module';
 import { ReportsModule } from './reports/reports.module';
@@ -21,6 +19,7 @@ import { PairAlertsModule } from './pair-alerts/pair-alerts.module';
 import { validateEnvironment } from './config/env.validation';
 import { OutboxModule } from './outbox/outbox.module';
 import { MatchingJobsModule } from './matching/matching-jobs.module';
+import { SupportModule } from './support/support.module';
 
 @Module({
   imports: [
@@ -49,14 +48,13 @@ import { MatchingJobsModule } from './matching/matching-jobs.module';
     MessagesModule,
     MatchingModule,
     NotificationsModule,
-    TransactionsModule,
-    ReviewsModule,
     AchievementsModule,
     AdminModule,
     ReportsModule,
     PairAlertsModule,
     OutboxModule,
     MatchingJobsModule,
+    SupportModule,
   ],
   controllers: [AppController],
   providers: [

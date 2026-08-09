@@ -6,10 +6,10 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { sign, verify, type JwtPayload } from 'jsonwebtoken';
-import { createHash } from 'crypto';
+import { randomUUID } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
 
-export type GuestAccessScope = 'conversation' | 'transaction';
+export type GuestAccessScope = 'identity' | 'conversation' | 'transaction';
 
 interface GuestAccessClaims extends JwtPayload {
   sub: string;
@@ -35,65 +35,36 @@ export class GuestAccessService {
     this.getSecret();
   }
 
+  // Retained for historical, unregistered transaction code. Public marketplace
+  // routes never call this path while payments are disabled.
   async getOrCreateGuestUser(name: string, emailAddress: string) {
     const email = emailAddress.trim().toLowerCase();
     const existing = await this.prisma.user.findUnique({ where: { email } });
-
-    if (
-      existing?.emailVerified ||
-      existing?.googleId ||
-      existing?.passwordHash
-    ) {
-      throw new ConflictException(
-        'An account already uses this email. Please log in to continue.',
-      );
+    if (existing?.emailVerified || existing?.googleId || existing?.passwordHash) {
+      throw new ConflictException('An account already uses this email.');
     }
+    if (existing) return existing;
+    return this.prisma.user.create({
+      data: { email, name: name.trim(), emailVerified: false },
+    });
+  }
 
-    if (existing) {
-      if (existing.name !== name.trim()) {
-        return this.prisma.user.update({
-          where: { id: existing.id },
-          data: { name: name.trim() },
-        });
-      }
-      return existing;
-    }
-
+  async getOrCreateGuestContactUser(name: string, _contactAddress: string) {
     return this.prisma.user.create({
       data: {
-        email,
+        email: `guest-${randomUUID()}@guest.remnant.local`,
         name: name.trim(),
         emailVerified: false,
       },
     });
   }
 
-  async getOrCreateGuestContactUser(name: string, contactAddress: string) {
-    const normalizedContact = contactAddress.trim().toLowerCase();
-    const contactKey = createHash('sha256')
-      .update(normalizedContact)
-      .digest('hex')
-      .slice(0, 32);
-    const email = `guest-contact-${contactKey}@guest.remnant.local`;
-    const existing = await this.prisma.user.findUnique({ where: { email } });
-
-    if (existing) {
-      if (existing.name !== name.trim()) {
-        return this.prisma.user.update({
-          where: { id: existing.id },
-          data: { name: name.trim() },
-        });
-      }
-      return existing;
-    }
-
-    return this.prisma.user.create({
-      data: {
-        email,
-        name: name.trim(),
-        emailVerified: false,
-      },
-    });
+  async createGuestSession(name = 'Guest') {
+    const user = await this.getOrCreateGuestContactUser(name, randomUUID());
+    return {
+      token: this.issueToken('identity', user.id, user),
+      expiresInDays: 90,
+    };
   }
 
   issueToken(
@@ -107,8 +78,16 @@ export class GuestAccessService {
       subject: user.id,
       issuer: 'remnant-api',
       audience: 'remnant-guest-access',
-      expiresIn: scope === 'transaction' ? '90d' : '30d',
+      expiresIn: scope === 'conversation' ? '30d' : '90d',
     });
+  }
+
+  verifyIdentityToken(token: string | undefined) {
+    const payload = this.verifyPayload(token);
+    if (payload.scope !== 'identity' || payload.resourceId !== payload.sub) {
+      throw new UnauthorizedException('Guest access has expired or is invalid');
+    }
+    return { userId: payload.sub, email: payload.email };
   }
 
   verifyToken(
@@ -116,26 +95,26 @@ export class GuestAccessService {
     scope: GuestAccessScope,
     resourceId: string,
   ) {
-    if (!token)
-      throw new UnauthorizedException('Guest access token is required');
+    const payload = this.verifyPayload(token);
 
+    if (payload.scope !== scope || payload.resourceId !== resourceId) {
+      throw new UnauthorizedException('Guest access has expired or is invalid');
+    }
+    return { userId: payload.sub, email: payload.email };
+  }
+
+  private verifyPayload(token: string | undefined) {
+    if (!token) throw new UnauthorizedException('Guest access token is required');
     try {
       const payload = verify(token, this.getSecret(), {
         algorithms: ['HS256'],
         issuer: 'remnant-api',
         audience: 'remnant-guest-access',
       }) as GuestAccessClaims;
-
-      if (
-        payload.scope !== scope ||
-        payload.resourceId !== resourceId ||
-        !payload.sub
-      ) {
-        throw new Error('Guest token scope mismatch');
-      }
-      return { userId: payload.sub, email: payload.email };
+      if (!payload.sub || !payload.resourceId || !payload.scope) throw new Error('Invalid guest token');
+      return payload;
     } catch (error) {
-      if (error instanceof ServiceUnavailableException) throw error;
+      if (error instanceof ServiceUnavailableException || error instanceof UnauthorizedException) throw error;
       throw new UnauthorizedException('Guest access has expired or is invalid');
     }
   }
