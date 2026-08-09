@@ -49,6 +49,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run db:generate
+      - run: npm run build
       - uses: aws-actions/configure-aws-credentials@ff717079ee2060e4bcee96c4779b553acc87447c # v4
         with:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
@@ -78,7 +79,10 @@ jobs:
           npm run db:deploy:pooler
       - run: npm prune --omit=dev
       - name: Package Lambda
-        run: zip -r ../function.zip dist node_modules package.json package-lock.json prisma
+        run: |
+          set -euo pipefail
+          test -f dist/lambda.js
+          zip -r ../function.zip dist node_modules package.json package-lock.json prisma
       - run: aws s3 cp ../function.zip s3://remnant-deployments-158128612346/remnant-api/${{ github.sha }}.zip
       - run: aws lambda update-function-code --function-name remnant-api --s3-bucket remnant-deployments-158128612346 --s3-key remnant-api/${{ github.sha }}.zip >/dev/null
       - run: aws lambda wait function-updated --function-name remnant-api
