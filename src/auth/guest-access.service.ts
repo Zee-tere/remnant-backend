@@ -123,7 +123,7 @@ export class GuestAccessService {
     const secret = this.configService.get<string>('GUEST_ACCESS_SECRET') ?? '';
     if (secret.length < 32) {
       throw new ServiceUnavailableException(
-        'Guest messaging is temporarily unavailable. Please try again shortly.',
+        'Guest access is temporarily unavailable. Please try again shortly.',
       );
     }
     return secret;

@@ -2,7 +2,6 @@ import {
   Body,
   Controller,
   Get,
-  Headers,
   Param,
   ParseUUIDPipe,
   Patch,
@@ -32,47 +31,8 @@ export class MessagesController {
   @Throttle({ default: { limit: 5, ttl: 60000 } })
   startGuestConversation(
     @Body() dto: StartGuestConversationDto,
-    @Headers('x-guest-token') token?: string,
   ) {
-    return this.messagesService.startGuestConversation(dto, token);
-  }
-
-  @Get('guest/:id')
-  getGuestConversation(
-    @Param('id', ParseUUIDPipe) id: string,
-    @Headers('x-guest-token') token?: string,
-  ) {
-    return this.messagesService.getGuestConversation(id, token);
-  }
-
-  @Get('guest')
-  getGuestConversations(@Headers('x-guest-token') token?: string) {
-    return this.messagesService.getGuestConversations(token);
-  }
-
-  @Post('guest/:id/messages')
-  @Throttle({ default: { limit: 12, ttl: 60000 } })
-  createGuestMessage(
-    @Param('id', ParseUUIDPipe) id: string,
-    @Body() dto: CreateMessageDto,
-    @Headers('x-guest-token') token?: string,
-  ) {
-    return this.messagesService.createGuestMessage(
-      id,
-      token,
-      dto.content,
-      dto.type,
-      dto.clientMessageId,
-    );
-  }
-
-  @Patch('guest/:id/read')
-  markGuestConversationRead(
-    @Param('id', ParseUUIDPipe) id: string,
-    @Headers('x-guest-token') token?: string,
-    @Body() dto: MarkConversationReadDto = {},
-  ) {
-    return this.messagesService.markGuestConversationRead(id, token, dto);
+    return this.messagesService.startGuestConversation(dto);
   }
 
   @Get()

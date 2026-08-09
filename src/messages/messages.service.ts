@@ -26,14 +26,26 @@ export class MessagesService {
     private guestAccessService: GuestAccessService,
   ) {}
 
-  async startGuestConversation(dto: StartGuestConversationDto, token?: string) {
-    const guest = token
-      ? await this.prisma.user.findUnique({
-          where: { id: this.guestAccessService.verifyIdentityToken(token).userId },
-        })
-      : await this.guestAccessService.getOrCreateGuestContactUser(dto.name, randomUUID());
-    if (!guest) throw new NotFoundException('Guest identity not found');
+  async startGuestConversation(dto: StartGuestConversationDto) {
+    const listing = await this.prisma.listing.findFirst({
+      where: { id: dto.listingId, status: 'ACTIVE' },
+      select: { isGuestListing: true },
+    });
+    if (!listing) throw new NotFoundException('Active listing not found');
+    if (listing.isGuestListing) {
+      throw new BadRequestException('Use the seller contact shown on this listing');
+    }
+
+    const guest = await this.guestAccessService.getOrCreateGuestUser(
+      dto.name,
+      `guest-inquiry-${dto.clientRequestId}@guest.remnant.local`,
+    );
     const conversation = await this.startConversation(guest.id, dto.listingId);
+    const guestContact = this.normalizeGuestContact(dto.contactMethod, dto.contactValue);
+    await this.prisma.conversation.update({
+      where: { id: conversation.id },
+      data: { guestContact },
+    });
     const message = await this.createMessage(
       conversation.id,
       guest.id,
@@ -41,14 +53,10 @@ export class MessagesService {
       'OFFER',
       dto.clientRequestId,
     );
-    const accessToken = token ?? this.guestAccessService.issueToken('conversation', conversation.id, guest);
     return {
       delivered: true,
       conversationId: conversation.id,
       messageId: message.id,
-      accessToken,
-      expiresInDays: 30,
-      deepLink: `/guest/messages/${conversation.id}`,
     };
   }
 
@@ -181,6 +189,9 @@ export class MessagesService {
     });
     if (!listing || listing.status !== 'ACTIVE') {
       throw new NotFoundException('Active listing not found');
+    }
+    if (listing.isGuestListing) {
+      throw new BadRequestException('Use the seller contact shown on this listing');
     }
     if (listing.userId === buyerId) {
       throw new ForbiddenException('Cannot message yourself');
@@ -599,6 +610,34 @@ export class MessagesService {
         otherLastReadSequence: otherReadState?.lastReadSequence ?? 0,
       },
     };
+  }
+
+  private normalizeGuestContact(method: 'WHATSAPP' | 'EMAIL' | 'TELEGRAM', rawValue: string) {
+    const value = rawValue.trim();
+    if (method === 'EMAIL') {
+      const email = value.toLowerCase();
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254) {
+        throw new BadRequestException('Enter a valid email address');
+      }
+      return { method, value: email };
+    }
+    if (method === 'WHATSAPP') {
+      let phone = value.replace(/[^\d+]/g, '');
+      if (phone.startsWith('+')) phone = phone.slice(1);
+      if (phone.startsWith('0')) phone = `234${phone.slice(1)}`;
+      if (!/^\d{10,15}$/.test(phone)) {
+        throw new BadRequestException('Enter a valid WhatsApp number with country code');
+      }
+      return { method, value: phone };
+    }
+    const username = value
+      .replace(/^https?:\/\/(?:www\.)?(?:t\.me|telegram\.me)\//i, '')
+      .replace(/^@/, '')
+      .replace(/\/$/, '');
+    if (!/^[A-Za-z0-9_]{5,32}$/.test(username)) {
+      throw new BadRequestException('Enter a valid Telegram username');
+    }
+    return { method, value: `@${username}` };
   }
 
   private encodeConversationCursor(cursor: ConversationCursor) {

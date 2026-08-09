@@ -370,6 +370,7 @@ model Conversation {
   listing             Listing                   @relation(fields: [listingId], references: [id])
   buyer               User                      @relation("BuyerConversations", fields: [buyerId], references: [id])
   seller              User                      @relation("SellerConversations", fields: [sellerId], references: [id])
+  guestContact        Json?
   messages            Message[]
   participants        ConversationParticipant[]
   nextMessageSequence Int                       @default(0)

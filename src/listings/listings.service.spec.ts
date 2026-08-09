@@ -159,20 +159,27 @@ describe('ListingsService', () => {
     );
   });
 
-  it('does not expose guest contact details in ordinary listing responses', async () => {
+  it('exposes only the public guest contact fields in listing responses', async () => {
     prisma.listing.findFirst.mockResolvedValue({
       id: 'guest-listing',
       images: [],
       isGuestListing: true,
-      guestContact: { email: 'seller@example.com' },
+      guestContact: {
+        method: 'EMAIL',
+        value: 'seller@example.com',
+        manageTokenHash: 'must-not-leak',
+      },
     });
 
     const listing = await service.findOne('guest-listing', false);
 
-    expect((listing as typeof listing & { guestContact?: unknown }).guestContact).toBeUndefined();
+    expect((listing as typeof listing & { guestContact?: unknown }).guestContact).toEqual({
+      method: 'EMAIL',
+      value: 'seller@example.com',
+    });
   });
 
-  it('creates a passwordless guest listing without collecting contact details', async () => {
+  it('creates a passwordless guest listing with normalized public contact details', async () => {
     prisma.listing.findUnique.mockResolvedValue(null);
     prisma.listing.create.mockResolvedValue({
       id: 'guest-listing',
@@ -198,12 +205,15 @@ describe('ListingsService', () => {
       city: 'Lagos',
       images: ['https://uploads.example/key'],
       uploadIds: ['11111111-1111-4111-8111-111111111111'],
+      contactMethod: 'WHATSAPP',
+      contactValue: '0801 234 5678',
     } as never, 'guest-token');
 
     expect(prisma.listing.create).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
           isGuestListing: true,
+          guestContact: { method: 'WHATSAPP', value: '2348012345678' },
           user: { connect: { id: 'guest-1' } },
         }),
       }),

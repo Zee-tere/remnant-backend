@@ -11,6 +11,7 @@ import {
   Min,
 } from 'class-validator';
 import { Transform, Type } from 'class-transformer';
+import { GUEST_CONTACT_METHODS, GuestContactMethod } from '../listings/listings.dto';
 
 export class StartConversationDto {
   @IsUUID()
@@ -95,4 +96,14 @@ export class StartGuestConversationDto extends StartConversationDto {
   @IsNotEmpty()
   @MaxLength(2000)
   offer: string;
+
+  @IsString()
+  @IsIn(GUEST_CONTACT_METHODS)
+  contactMethod: GuestContactMethod;
+
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(254)
+  contactValue: string;
 }

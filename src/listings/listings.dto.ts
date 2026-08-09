@@ -85,7 +85,20 @@ export class CreateListingDto {
   uploadIds: string[];
 }
 
-export class CreateGuestListingDto extends CreateListingDto {}
+export const GUEST_CONTACT_METHODS = ['WHATSAPP', 'EMAIL', 'TELEGRAM'] as const;
+export type GuestContactMethod = (typeof GUEST_CONTACT_METHODS)[number];
+
+export class CreateGuestListingDto extends CreateListingDto {
+  @IsString()
+  @IsIn(GUEST_CONTACT_METHODS)
+  contactMethod: GuestContactMethod;
+
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(254)
+  contactValue: string;
+}
 
 export class UpdateGuestListingStatusDto {
   @Type(() => Number)
@@ -96,6 +109,23 @@ export class UpdateGuestListingStatusDto {
   @IsString()
   @IsIn(['ACTIVE', 'PAUSED', 'COMPLETED'])
   status: 'ACTIVE' | 'PAUSED' | 'COMPLETED';
+}
+
+export class UpdateGuestListingContactDto {
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  version: number;
+
+  @IsString()
+  @IsIn(GUEST_CONTACT_METHODS)
+  contactMethod: GuestContactMethod;
+
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(254)
+  contactValue: string;
 }
 
 export class UpdateListingDto {

@@ -1,6 +1,12 @@
 import { Injectable, NotFoundException, ForbiddenException, Logger, BadRequestException, ConflictException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { CreateGuestListingDto, CreateListingDto, UpdateListingDto } from './listings.dto';
+import {
+  CreateGuestListingDto,
+  CreateListingDto,
+  GuestContactMethod,
+  UpdateGuestListingContactDto,
+  UpdateListingDto,
+} from './listings.dto';
 import { ListingStatus, Prisma } from '@prisma/client';
 import { createHash, randomUUID, timingSafeEqual } from 'crypto';
 import { S3Service } from '../utils/s3.service';
@@ -133,6 +139,7 @@ export class ListingsService {
     this.assertManagedImages(dto.images);
     this.assertCompatibilityAttributes(dto.compatibilityAttributes);
     this.assertPrice(dto.intentionTag, dto.price);
+    const guestContact = this.normalizeGuestContact(dto.contactMethod, dto.contactValue);
     const existing = await this.findIdempotentListing(guest.userId, dto.clientRequestId);
     if (existing) {
       return { ...(await this.withReadableImages(existing)), managementToken: token };
@@ -158,6 +165,7 @@ export class ListingsService {
             city: dto.city,
             images: dto.images,
             isGuestListing: true,
+            guestContact,
             clientRequestId: dto.clientRequestId,
             expiresAt: this.listingExpiryDate(),
           },
@@ -187,7 +195,33 @@ export class ListingsService {
       slug: listing.slug,
       status: listing.status,
       version: listing.version,
+      contact: this.publicGuestContact(listing.guestContact),
       image: (await this.s3Service.getReadableUrls(listing.images.slice(0, 1)))[0] ?? null,
+    };
+  }
+
+
+  async updateGuestContact(
+    id: string,
+    token: string | undefined,
+    dto: UpdateGuestListingContactDto,
+  ) {
+    const listing = await this.getVerifiedGuestListing(id, token);
+    if (listing.version !== dto.version) {
+      throw new ConflictException('This listing changed. Refresh before updating it.');
+    }
+    const contact = this.normalizeGuestContact(dto.contactMethod, dto.contactValue);
+    const changed = await this.prisma.listing.updateMany({
+      where: { id: listing.id, version: dto.version },
+      data: { guestContact: contact, version: { increment: 1 } },
+    });
+    if (changed.count !== 1) {
+      throw new ConflictException('This listing changed. Refresh before updating it.');
+    }
+    return {
+      contact,
+      version: dto.version + 1,
+      message: 'Contact details updated',
     };
   }
 
@@ -200,6 +234,9 @@ export class ListingsService {
     const listing = await this.getVerifiedGuestListing(id, token);
     if (listing.version !== version) {
       throw new ConflictException('This listing changed. Refresh before updating it.');
+    }
+    if (status === 'ACTIVE' && !this.publicGuestContact(listing.guestContact)) {
+      throw new BadRequestException('Add a public contact before publishing this listing');
     }
     this.assertStatusTransition(listing.status, status);
     const changed = await this.prisma.listing.updateMany({
@@ -829,7 +866,7 @@ export class ListingsService {
     const images = maxImages ? listing.images.slice(0, maxImages) : listing.images;
     return {
       ...listing,
-      guestContact: undefined,
+      guestContact: this.publicGuestContact((listing as T & { guestContact?: unknown }).guestContact),
       images: await this.s3Service.getReadableUrls(images ?? []),
     } as T;
   }
@@ -884,6 +921,49 @@ export class ListingsService {
     if (images?.some((url) => !this.s3Service.getObjectKey(url))) {
       throw new BadRequestException('Listing images must be uploaded through Remnant.');
     }
+  }
+
+
+  private publicGuestContact(value: unknown) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+    const contact = value as Record<string, unknown>;
+    if (
+      !['WHATSAPP', 'EMAIL', 'TELEGRAM'].includes(String(contact.method)) ||
+      typeof contact.value !== 'string'
+    ) {
+      return undefined;
+    }
+    return { method: contact.method as GuestContactMethod, value: contact.value };
+  }
+
+  private normalizeGuestContact(method: GuestContactMethod, rawValue: string) {
+    const value = rawValue.trim();
+    if (method === 'EMAIL') {
+      const email = value.toLowerCase();
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254) {
+        throw new BadRequestException('Enter a valid email address');
+      }
+      return { method, value: email };
+    }
+
+    if (method === 'WHATSAPP') {
+      let phone = value.replace(/[^\d+]/g, '');
+      if (phone.startsWith('+')) phone = phone.slice(1);
+      if (phone.startsWith('0')) phone = `234${phone.slice(1)}`;
+      if (!/^\d{10,15}$/.test(phone)) {
+        throw new BadRequestException('Enter a valid WhatsApp number with country code');
+      }
+      return { method, value: phone };
+    }
+
+    const username = value
+      .replace(/^https?:\/\/(?:www\.)?(?:t\.me|telegram\.me)\//i, '')
+      .replace(/^@/, '')
+      .replace(/\/$/, '');
+    if (!/^[A-Za-z0-9_]{5,32}$/.test(username)) {
+      throw new BadRequestException('Enter a valid Telegram username');
+    }
+    return { method, value: `@${username}` };
   }
 
   private assertPrice(intent: IntentionTag, price?: string) {
