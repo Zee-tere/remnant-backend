@@ -54,11 +54,13 @@ jobs:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           aws-region: us-east-1
       - name: Capture currently deployed Lambda package
+        id: capture_previous
         shell: bash
         run: |
           set -euo pipefail
           code_url="$(aws lambda get-function --function-name remnant-api --query 'Code.Location' --output text)"
           curl --fail --show-error --silent "$code_url" --output ../previous-function.zip
+          echo "captured=true" >> "$GITHUB_OUTPUT"
       - name: Apply database migrations
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
@@ -96,7 +98,7 @@ jobs:
           API_URL: ${{ secrets.PRODUCTION_API_URL }}
         run: ./scripts/verify-production.ps1 -ApiUrl $env:API_URL -FrontendUrl https://remnantmarket.co -Region us-east-1 -FunctionName remnant-api -UploadBucket remnant-uploads-prod
       - name: Restore previous Lambda package after a failed release
-        if: failure()
+        if: failure() && steps.capture_previous.outputs.captured == 'true'
         shell: bash
         run: |
           set -euo pipefail
