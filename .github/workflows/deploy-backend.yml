@@ -60,13 +60,21 @@ jobs:
           set -euo pipefail
           code_url="$(aws lambda get-function --function-name remnant-api --query 'Code.Location' --output text)"
           curl --fail --show-error --silent "$code_url" --output ../previous-function.zip
+          rollback_key="remnant-api/rollback/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.zip"
+          aws s3 cp ../previous-function.zip "s3://remnant-deployments-158128612346/$rollback_key"
           echo "captured=true" >> "$GITHUB_OUTPUT"
+          echo "s3_key=$rollback_key" >> "$GITHUB_OUTPUT"
       - name: Apply database migrations
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: |
           set -euo pipefail
+          if [ -z "$DATABASE_URL" ]; then
+            DATABASE_URL="$(aws ssm get-parameter --name /remnant/prod/DATABASE_URL --with-decryption --query 'Parameter.Value' --output text)"
+          fi
           test -n "$DATABASE_URL"
+          echo "::add-mask::$DATABASE_URL"
+          export DATABASE_URL
           npm run db:deploy:pooler
       - run: npm prune --omit=dev
       - name: Package Lambda
@@ -82,7 +90,7 @@ jobs:
         env:
           ALARM_TOPIC_ARN: ${{ secrets.ALARM_TOPIC_ARN }}
         run: |
-          if (-not $env:ALARM_TOPIC_ARN) { throw 'ALARM_TOPIC_ARN production secret is required' }
+          if (-not $env:ALARM_TOPIC_ARN) { $env:ALARM_TOPIC_ARN = 'arn:aws:sns:us-east-1:158128612346:remnant-prod-alerts' }
           ./scripts/configure-production-alarms.ps1 -NotificationTopicArn $env:ALARM_TOPIC_ARN -Region us-east-1 -FunctionName remnant-api -ApiId 36yevvooae
       - name: API smoke check
         env:
@@ -102,6 +110,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test -s ../previous-function.zip
-          aws lambda update-function-code --function-name remnant-api --zip-file fileb://../previous-function.zip
+          test -n "${{ steps.capture_previous.outputs.s3_key }}"
+          aws lambda update-function-code --function-name remnant-api --s3-bucket remnant-deployments-158128612346 --s3-key "${{ steps.capture_previous.outputs.s3_key }}"
           aws lambda wait function-updated --function-name remnant-api
