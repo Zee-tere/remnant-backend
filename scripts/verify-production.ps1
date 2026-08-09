@@ -33,26 +33,28 @@ function Invoke-Check([string]$Name, [scriptblock]$Check) {
   }
 }
 
-Assert-Command 'curl.exe'
+$curlCommand = if (Get-Command 'curl.exe' -ErrorAction SilentlyContinue) { 'curl.exe' } else { 'curl' }
+Assert-Command $curlCommand
 Assert-Command 'aws'
 
 $api = $ApiUrl.TrimEnd('/')
 $web = $FrontendUrl.TrimEnd('/')
 
 Invoke-Check 'API health' {
-  curl.exe --fail --silent --show-error --max-time 20 "$api/health" | Out-Null
+  & $curlCommand --fail --silent --show-error --max-time 20 "$api/health" | Out-Null
 }
 
 Invoke-Check 'Public listing feed' {
-  curl.exe --fail --silent --show-error --max-time 20 "$api/listings?limit=1" | Out-Null
+  & $curlCommand --fail --silent --show-error --max-time 20 "$api/listings?limit=1" | Out-Null
 }
 
 Invoke-Check 'Frontend marketplace' {
-  curl.exe --fail --silent --show-error --max-time 20 "$web/marketplace" | Out-Null
+  & $curlCommand --fail --silent --show-error --max-time 20 "$web/marketplace" | Out-Null
 }
 
 Invoke-Check 'Controlled disallowed-origin response' {
-  $status = curl.exe --silent --output NUL --write-out '%{http_code}' --request OPTIONS "$api/listings" --header 'Origin: https://not-remnant.invalid' --header 'Access-Control-Request-Method: GET'
+  $nullTarget = if ($IsWindows -or $env:OS -eq 'Windows_NT') { 'NUL' } else { '/dev/null' }
+  $status = & $curlCommand --silent --output $nullTarget --write-out '%{http_code}' --request OPTIONS "$api/listings" --header 'Origin: https://not-remnant.invalid' --header 'Access-Control-Request-Method: GET'
   if ($status -ne '403') { throw "expected 403, received $status" }
 }
 
