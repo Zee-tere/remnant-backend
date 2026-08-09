@@ -58,6 +58,17 @@ Invoke-Check 'Controlled disallowed-origin response' {
   if ($status -ne '403') { throw "expected 403, received $status" }
 }
 
+Invoke-Check 'Credentialed production CORS preflight' {
+  $nullTarget = if ($IsWindows -or $env:OS -eq 'Windows_NT') { 'NUL' } else { '/dev/null' }
+  $headers = & $curlCommand --silent --dump-header - --output $nullTarget --request OPTIONS "$api/auth/guest-session" --header 'Origin: https://remnantmarket.co' --header 'Access-Control-Request-Method: POST' --header 'Access-Control-Request-Headers: content-type,x-guest-token,x-request-id'
+  $headerText = $headers -join "`n"
+  if ($headerText -notmatch '(?im)^access-control-allow-origin:\s*https://remnantmarket\.co\s*$') { throw 'production origin is not allowed' }
+  if ($headerText -notmatch '(?im)^access-control-allow-credentials:\s*true\s*$') { throw 'credentialed requests are not allowed' }
+  foreach ($requiredHeader in @('content-type', 'x-guest-token', 'x-request-id')) {
+    if ($headerText -notmatch "(?im)^access-control-allow-headers:.*$requiredHeader") { throw "$requiredHeader is not allowed" }
+  }
+}
+
 Invoke-Check 'Lambda configuration exists' {
   aws lambda get-function-configuration --region $Region --function-name $FunctionName --query 'FunctionName' --output text | Out-Null
 }

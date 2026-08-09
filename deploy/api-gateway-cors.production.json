@@ -1,0 +1,25 @@
+{
+  "AllowCredentials": true,
+  "AllowHeaders": [
+    "content-type",
+    "authorization",
+    "x-guest-token",
+    "x-request-id"
+  ],
+  "AllowMethods": [
+    "GET",
+    "POST",
+    "PUT",
+    "PATCH",
+    "DELETE",
+    "OPTIONS"
+  ],
+  "AllowOrigins": [
+    "https://remnantmarket.co",
+    "https://www.remnantmarket.co"
+  ],
+  "ExposeHeaders": [
+    "x-request-id"
+  ],
+  "MaxAge": 600
+}

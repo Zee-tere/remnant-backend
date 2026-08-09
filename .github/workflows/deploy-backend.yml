@@ -54,6 +54,8 @@ jobs:
         with:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           aws-region: us-east-1
+      - name: Enforce production API Gateway CORS
+        run: aws apigatewayv2 update-api --api-id 36yevvooae --cors-configuration file://deploy/api-gateway-cors.production.json >/dev/null
       - name: Capture currently deployed Lambda package
         id: capture_previous
         shell: bash
