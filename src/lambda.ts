@@ -116,6 +116,14 @@ export const handler: Handler = async (
 
   if (
     event.source === 'aws.events' &&
+    event['detail-type'] === 'RemnantGuestListingCleanup'
+  ) {
+    const app = await bootstrapApp();
+    return app.get(ListingsService).expireListings();
+  }
+
+  if (
+    event.source === 'aws.events' &&
     event['detail-type'] === 'RemnantMaintenance'
   ) {
     const app = await bootstrapApp();

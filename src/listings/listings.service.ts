@@ -59,6 +59,8 @@ const SEARCH_STOP_WORDS = new Set([
   'with',
 ]);
 
+const GUEST_LISTING_LIFETIME_DAYS = 7;
+
 @Injectable()
 export class ListingsService {
   private readonly logger = new Logger(ListingsService.name);
@@ -167,7 +169,7 @@ export class ListingsService {
             isGuestListing: true,
             guestContact,
             clientRequestId: dto.clientRequestId,
-            expiresAt: this.listingExpiryDate(),
+            expiresAt: this.guestListingExpiryDate(),
           },
           include: { user: { select: { id: true, name: true, avatarUrl: true, trustTier: true } } },
         });
@@ -195,6 +197,7 @@ export class ListingsService {
       slug: listing.slug,
       status: listing.status,
       version: listing.version,
+      expiresAt: listing.expiresAt,
       contact: this.publicGuestContact(listing.guestContact),
       image: (await this.s3Service.getReadableUrls(listing.images.slice(0, 1)))[0] ?? null,
     };
@@ -238,13 +241,15 @@ export class ListingsService {
     if (status === 'ACTIVE' && !this.publicGuestContact(listing.guestContact)) {
       throw new BadRequestException('Add a public contact before publishing this listing');
     }
+    if (status === 'ACTIVE' && listing.expiresAt && listing.expiresAt <= new Date()) {
+      throw new ConflictException('This guest listing has reached its seven-day limit');
+    }
     this.assertStatusTransition(listing.status, status);
     const changed = await this.prisma.listing.updateMany({
       where: { id: listing.id, version },
       data: {
         status,
         version: { increment: 1 },
-        ...(status === 'ACTIVE' ? { expiresAt: this.listingExpiryDate() } : {}),
       },
     });
     if (changed.count !== 1) throw new ConflictException('This listing changed. Refresh before updating it.');
@@ -265,11 +270,47 @@ export class ListingsService {
   }
 
   async expireListings() {
+    const now = new Date();
+    const expiredGuests = await this.prisma.listing.findMany({
+      where: {
+        isGuestListing: true,
+        status: { in: ['ACTIVE', 'PAUSED', 'EXPIRED', 'COMPLETED'] },
+        expiresAt: { lte: now },
+      },
+      select: { id: true, slug: true, images: true },
+      take: 500,
+    });
+
+    let deletedGuests = 0;
+    if (expiredGuests.length > 0) {
+      const ids = expiredGuests.map((listing) => listing.id);
+      deletedGuests = await this.prisma.$transaction(async (transaction) => {
+        const deleted = await transaction.listing.updateMany({
+          where: {
+            id: { in: ids },
+            isGuestListing: true,
+            status: { in: ['ACTIVE', 'PAUSED', 'EXPIRED', 'COMPLETED'] },
+            expiresAt: { lte: now },
+          },
+          data: { status: 'DELETED', images: [], version: { increment: 1 } },
+        });
+        await transaction.upload.updateMany({
+          where: { listingId: { in: ids }, status: 'ATTACHED' },
+          data: { listingId: null, status: 'PENDING', attachedAt: null },
+        });
+        return deleted.count;
+      });
+      await Promise.allSettled(expiredGuests.map(async (listing) => {
+        await this.markListingImagesOrphaned(listing.images, listing.id);
+        await this.notifyIndexNow(listing.slug);
+      }));
+    }
+
     const result = await this.prisma.listing.updateMany({
-      where: { status: 'ACTIVE', expiresAt: { lte: new Date() } },
+      where: { isGuestListing: false, status: 'ACTIVE', expiresAt: { lte: now } },
       data: { status: 'EXPIRED', version: { increment: 1 } },
     });
-    return { expired: result.count };
+    return { expired: result.count, deletedGuests };
   }
 
   async findAll(filters?: {
@@ -289,7 +330,7 @@ export class ListingsService {
     const skip = cursorMode ? undefined : (page - 1) * limit;
 
     const where: Prisma.ListingWhereInput = {
-      status: 'ACTIVE',
+      ...this.activeListingWhere(),
       intentionTag: { not: 'WANTED' },
     };
 
@@ -356,7 +397,7 @@ export class ListingsService {
 
   async getSitemapEntries() {
     const listings = await this.prisma.listing.findMany({
-      where: { status: 'ACTIVE', intentionTag: { not: 'WANTED' } },
+      where: { ...this.activeListingWhere(), intentionTag: { not: 'WANTED' } },
       orderBy: { updatedAt: 'desc' },
       take: 50_000,
       select: {
@@ -376,7 +417,7 @@ export class ListingsService {
 
   async findOne(id: string, trackView = true) {
     const listing = await this.prisma.listing.findFirst({
-      where: { id, status: 'ACTIVE', intentionTag: { not: 'WANTED' } },
+      where: { id, ...this.activeListingWhere(), intentionTag: { not: 'WANTED' } },
       include: {
         user: { select: { id: true, name: true, avatarUrl: true, city: true, trustTier: true } },
       },
@@ -395,7 +436,7 @@ export class ListingsService {
 
   async findBySlug(slug: string, trackView = true) {
     const listing = await this.prisma.listing.findFirst({
-      where: { slug, status: 'ACTIVE', intentionTag: { not: 'WANTED' } },
+      where: { slug, ...this.activeListingWhere(), intentionTag: { not: 'WANTED' } },
       include: {
         user: { select: { id: true, name: true, avatarUrl: true, city: true, trustTier: true } },
       },
@@ -418,7 +459,7 @@ export class ListingsService {
     }
 
     const result = await this.prisma.listing.updateMany({
-      where: { id, status: 'ACTIVE', intentionTag: { not: 'WANTED' } },
+      where: { id, ...this.activeListingWhere(), intentionTag: { not: 'WANTED' } },
       data: { viewCount: { increment: 1 } },
     });
     if (result.count === 0) throw new NotFoundException('Listing not found');
@@ -440,7 +481,7 @@ export class ListingsService {
 
   async findSimilar(id: string, requestedLimit?: number) {
     const source = await this.prisma.listing.findFirst({
-      where: { id, status: 'ACTIVE', intentionTag: { not: 'WANTED' } },
+      where: { id, ...this.activeListingWhere(), intentionTag: { not: 'WANTED' } },
     });
     if (!source) throw new NotFoundException('Listing not found');
 
@@ -461,6 +502,8 @@ export class ListingsService {
         FROM "Listing" candidate
         JOIN "Listing" source ON source.id = ${id}
         WHERE candidate.status = 'ACTIVE'
+          AND (candidate."expiresAt" IS NULL OR candidate."expiresAt" > NOW())
+          AND (source."expiresAt" IS NULL OR source."expiresAt" > NOW())
           AND candidate."intentionTag" <> 'WANTED'
           AND candidate.id <> source.id
           AND candidate.category = source.category
@@ -482,7 +525,7 @@ export class ListingsService {
       this.logger.warn(`Vector ranking unavailable for listing ${id}; using text fallback.`);
       const candidates = await this.prisma.listing.findMany({
         where: {
-          status: 'ACTIVE',
+          ...this.activeListingWhere(),
           intentionTag: { not: 'WANTED' },
           category: source.category,
           id: { not: id },
@@ -513,7 +556,7 @@ export class ListingsService {
 
     if (rankedIds.length === 0) return [];
     const listings = await this.prisma.listing.findMany({
-      where: { id: { in: rankedIds }, status: 'ACTIVE', intentionTag: { not: 'WANTED' } },
+      where: { id: { in: rankedIds }, ...this.activeListingWhere(), intentionTag: { not: 'WANTED' } },
       select: listingCardSelect,
     });
     const byId = new Map(listings.map((listing) => [listing.id, listing]));
@@ -623,7 +666,7 @@ export class ListingsService {
 
   async saveListing(userId: string, listingId: string) {
     const listing = await this.prisma.listing.findFirst({
-      where: { id: listingId, status: 'ACTIVE', intentionTag: { not: 'WANTED' } },
+      where: { id: listingId, ...this.activeListingWhere(), intentionTag: { not: 'WANTED' } },
     });
     if (!listing) throw new NotFoundException('Listing not found');
 
@@ -645,7 +688,7 @@ export class ListingsService {
     const saved = await this.prisma.savedListing.findMany({
       where: {
         userId,
-        listing: { status: 'ACTIVE', intentionTag: { not: 'WANTED' } },
+        listing: { ...this.activeListingWhere(), intentionTag: { not: 'WANTED' } },
       },
       include: {
         listing: {
@@ -695,7 +738,7 @@ export class ListingsService {
     }
 
     const baseWhere: Prisma.ListingWhereInput = {
-      status: 'ACTIVE',
+      ...this.activeListingWhere(),
       ...(params.category ? { category: params.category } : {}),
       ...(params.city ? { city: params.city } : {}),
       ...(params.intent
@@ -728,6 +771,7 @@ export class ListingsService {
           SELECT l.id, (1 - (l.embedding <=> ${vector}::vector)) AS relevance
           FROM "Listing" l
           WHERE l.status = 'ACTIVE'
+            AND (l."expiresAt" IS NULL OR l."expiresAt" > NOW())
             AND l."intentionTag" <> 'WANTED'
             AND l.embedding IS NOT NULL
             ${categoryFilter}
@@ -803,6 +847,7 @@ export class ListingsService {
           l."isGuestListing"
         FROM "Listing" l
         WHERE l.status = 'ACTIVE'
+          AND (l."expiresAt" IS NULL OR l."expiresAt" > NOW())
           ${intentFilter}
           ${categoryFilter}
           ${cityFilter}
@@ -996,6 +1041,17 @@ export class ListingsService {
     return new Date(Date.now() + days * 24 * 60 * 60 * 1000);
   }
 
+  private guestListingExpiryDate() {
+    return new Date(Date.now() + GUEST_LISTING_LIFETIME_DAYS * 24 * 60 * 60 * 1000);
+  }
+
+  private activeListingWhere(): Prisma.ListingWhereInput {
+    return {
+      status: 'ACTIVE',
+      OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
+    };
+  }
+
   private async findIdempotentListing(userId: string, clientRequestId: string) {
     return this.prisma.listing.findUnique({
       where: { userId_clientRequestId: { userId, clientRequestId } },
@@ -1120,6 +1176,7 @@ export class ListingsService {
         userId: true,
         isGuestListing: true,
         guestContact: true,
+        expiresAt: true,
       },
     });
     const guestContact = listing?.guestContact;

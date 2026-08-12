@@ -31,6 +31,11 @@ $rules = @(
     DetailType = 'RemnantOutboxRelay'
   },
   @{
+    Name = 'remnant-guest-listing-cleanup'
+    Schedule = 'rate(1 hour)'
+    DetailType = 'RemnantGuestListingCleanup'
+  },
+  @{
     Name = 'remnant-daily-maintenance'
     Schedule = 'rate(1 day)'
     DetailType = 'RemnantMaintenance'

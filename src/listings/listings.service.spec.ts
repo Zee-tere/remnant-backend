@@ -108,7 +108,7 @@ describe('ListingsService', () => {
     ]);
     expect(prisma.listing.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { status: 'ACTIVE', intentionTag: { not: 'WANTED' } },
+        where: expect.objectContaining({ status: 'ACTIVE', intentionTag: { not: 'WANTED' } }),
         take: 50_000,
       }),
     );
@@ -224,6 +224,56 @@ describe('ListingsService', () => {
       1,
       'guest_listing_created',
     );
+    const createdData = prisma.listing.create.mock.calls[0][0].data;
+    const lifetime = createdData.expiresAt.getTime() - Date.now();
+    expect(lifetime).toBeGreaterThan(6.99 * 24 * 60 * 60 * 1000);
+    expect(lifetime).toBeLessThanOrEqual(7 * 24 * 60 * 60 * 1000);
+  });
+
+  it('soft-deletes expired guest listings and releases their images', async () => {
+    prisma.listing.findMany
+      .mockResolvedValueOnce([{ id: 'guest-listing', slug: 'chair-1', images: ['https://uploads.example/key'] }])
+      .mockResolvedValueOnce([]);
+    prisma.listing.updateMany
+      .mockResolvedValueOnce({ count: 1 })
+      .mockResolvedValueOnce({ count: 0 });
+    prisma.upload.updateMany.mockResolvedValue({ count: 1 });
+
+    await expect(service.expireListings()).resolves.toEqual({ expired: 0, deletedGuests: 1 });
+
+    expect(prisma.listing.updateMany).toHaveBeenNthCalledWith(1, {
+      where: {
+        id: { in: ['guest-listing'] },
+        isGuestListing: true,
+        status: { in: ['ACTIVE', 'PAUSED', 'EXPIRED', 'COMPLETED'] },
+        expiresAt: { lte: expect.any(Date) },
+      },
+      data: { status: 'DELETED', images: [], version: { increment: 1 } },
+    });
+    expect(prisma.upload.updateMany).toHaveBeenCalledWith({
+      where: { listingId: { in: ['guest-listing'] }, status: 'ATTACHED' },
+      data: { listingId: null, status: 'PENDING', attachedAt: null },
+    });
+    expect(s3.markFilesOrphaned).toHaveBeenCalledWith(['https://uploads.example/key']);
+  });
+
+  it('does not let a guest pause and republish past the original seven-day deadline', async () => {
+    prisma.listing.findUnique.mockResolvedValue({
+      id: 'guest-listing',
+      title: 'Chair',
+      slug: 'chair-1',
+      status: 'PAUSED',
+      version: 2,
+      images: [],
+      userId: 'guest-1',
+      isGuestListing: true,
+      guestContact: { method: 'EMAIL', value: 'seller@example.com' },
+      expiresAt: new Date(Date.now() - 60_000),
+    });
+
+    await expect(service.updateGuestStatus('guest-listing', 'guest-token', 'ACTIVE', 2))
+      .rejects.toThrow('seven-day limit');
+    expect(prisma.listing.updateMany).not.toHaveBeenCalled();
   });
 
   it('searches every meaningful word across title, description, pairing term, category, and state', async () => {
@@ -270,7 +320,7 @@ describe('ListingsService', () => {
     prisma.listing.updateMany.mockResolvedValue({ count: 1 });
     await expect(service.trackView('listing-1', 'Mozilla/5.0')).resolves.toEqual({ tracked: true });
     expect(prisma.listing.updateMany).toHaveBeenCalledWith({
-      where: { id: 'listing-1', status: 'ACTIVE', intentionTag: { not: 'WANTED' } },
+      where: expect.objectContaining({ id: 'listing-1', status: 'ACTIVE', intentionTag: { not: 'WANTED' } }),
       data: { viewCount: { increment: 1 } },
     });
   });
