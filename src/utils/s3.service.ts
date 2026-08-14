@@ -1,4 +1,4 @@
-import { Injectable, InternalServerErrorException, BadRequestException, ServiceUnavailableException } from '@nestjs/common';
+import { Injectable, InternalServerErrorException, BadRequestException, Logger, ServiceUnavailableException } from '@nestjs/common';
 import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand, HeadObjectCommand, HeadBucketCommand, PutObjectTaggingCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { ConfigService } from '@nestjs/config';
@@ -33,6 +33,7 @@ function hasAllowedImageSignature(file: Express.Multer.File) {
 
 @Injectable()
 export class S3Service {
+  private readonly logger = new Logger(S3Service.name);
   private s3Client: S3Client;
   private bucketName: string;
   private region: string;
@@ -68,7 +69,7 @@ export class S3Service {
     if (!file) throw new BadRequestException('No file provided for upload.');
     if (!this.bucketName) {
       console.error('[S3Service] AWS_S3_BUCKET is not configured');
-      throw new ServiceUnavailableException('Image uploads are not configured yet. Please try again shortly.');
+      throw new ServiceUnavailableException('Images are temporarily unavailable. Please try again in a few minutes.');
     }
 
     // ── 3MB size limit ──
@@ -100,21 +101,26 @@ export class S3Service {
       CacheControl: 'public, max-age=31536000, immutable',
       ContentDisposition: 'inline',
       ServerSideEncryption: 'AES256' as const,
-      Tagging: 'remnant-status=pending',
     };
 
     try {
       await this.s3Client.send(new PutObjectCommand(uploadParams));
-      return this.publicBaseUrl
+      const storedUrl = this.publicBaseUrl
         ? `${this.publicBaseUrl}/${fileKey}`
         : `https://${this.bucketName}.s3.${this.region}.amazonaws.com/${fileKey}`;
+      try {
+        await this.tagFiles([storedUrl], 'pending');
+      } catch (error) {
+        this.logger.warn(`Image ${fileKey} uploaded without its optional lifecycle tag: ${error instanceof Error ? error.name : 'unknown error'}`);
+      }
+      return storedUrl;
     } catch (error: unknown) {
       console.error('[S3Service] File upload failed', error);
       const maybeError = error as { name?: string; '$metadata'?: { httpStatusCode?: number } };
       const name = maybeError.name;
       const statusCode = maybeError.$metadata?.httpStatusCode;
       if (name === 'AccessDenied' || name === 'NoSuchBucket' || name === 'PermanentRedirect' || statusCode === 403) {
-        throw new ServiceUnavailableException('Image uploads are not ready yet. Please check the upload bucket settings.');
+        throw new ServiceUnavailableException('Images are temporarily unavailable. Please try again in a few minutes.');
       }
       throw new InternalServerErrorException('File upload failed. Please try again.');
     }
@@ -233,7 +239,7 @@ export class S3Service {
     await this.tagFiles(storedUrls, 'orphaned');
   }
 
-  private async tagFiles(storedUrls: string[], status: 'attached' | 'orphaned') {
+  private async tagFiles(storedUrls: string[], status: 'pending' | 'attached' | 'orphaned') {
     if (!this.bucketName || storedUrls.length === 0) return;
     const keys = [...new Set(storedUrls.map((url) => this.getObjectKey(url)).filter((key): key is string => Boolean(key)))];
     await Promise.all(keys.map((key) => this.s3Client.send(new PutObjectTaggingCommand({
