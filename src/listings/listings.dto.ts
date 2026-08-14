@@ -35,7 +35,7 @@ export class CreateListingDto {
   @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
   @IsString()
   @IsNotEmpty()
-  @MinLength(10)
+  @MinLength(3, { message: 'Description must be at least 3 characters' })
   @MaxLength(2000)
   description: string;
 
@@ -144,7 +144,7 @@ export class UpdateListingDto {
   @IsOptional()
   @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
   @IsString()
-  @MinLength(10)
+  @MinLength(3, { message: 'Description must be at least 3 characters' })
   @MaxLength(2000)
   description?: string;
 
